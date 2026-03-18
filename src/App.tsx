@@ -80,6 +80,8 @@ interface Quantities {
 interface ShiftRecord {
   id: string;
   date: string;
+  startTime: string;
+  endTime: string;
   hours: Quantities['hours'];
   ava: Quantities['ava'];
   patients: Quantities['patients'];
@@ -199,12 +201,21 @@ export default function App() {
     const newRecord: ShiftRecord = {
       id: crypto.randomUUID(),
       date: shift.date,
+      startTime: shift.startTime,
+      endTime: shift.endTime,
       hours: { ...quantities.hours },
       ava: { ...quantities.ava },
       patients: { ...quantities.patients },
       applyPatients: quantities.applyPatients,
     };
-    setRecords([...records, newRecord]);
+    
+    const updatedRecords = [...records, newRecord].sort((a, b) => {
+      const dateA = new Date(`${a.date}T${a.startTime}`).getTime();
+      const dateB = new Date(`${b.date}T${b.startTime}`).getTime();
+      return dateA - dateB;
+    });
+
+    setRecords(updatedRecords);
     // Reset patient and AVA counts for next entry
     setQuantities(prev => ({
       ...prev,
@@ -221,6 +232,8 @@ export default function App() {
     setShift(prev => ({ 
       ...prev, 
       date: record.date,
+      startTime: record.startTime,
+      endTime: record.endTime,
       isAVAShift: Object.values(record.ava).some(v => v > 0) && Object.values(record.hours).every(v => v === 0)
     }));
     setQuantities({
@@ -478,7 +491,7 @@ export default function App() {
                 </div>
 
                 <div className="space-y-2">
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">Hora de Inicio</label>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">Hora de Inicio (24h)</label>
                   <input 
                     type="time" 
                     value={shift.startTime}
@@ -497,7 +510,7 @@ export default function App() {
                 </div>
 
                 <div className="space-y-2">
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">Hora de Fin</label>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">Hora de Fin (24h)</label>
                   <input 
                     type="time" 
                     value={shift.endTime}
@@ -684,6 +697,7 @@ export default function App() {
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200">
                       <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Fecha</th>
+                      <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Horario</th>
                       <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Horas Ord/Fest</th>
                       <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Horas AVA</th>
                       <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Pacientes</th>
@@ -694,7 +708,7 @@ export default function App() {
                     <AnimatePresence initial={false}>
                       {records.length === 0 ? (
                         <tr>
-                          <td colSpan={5} className="p-10 text-center text-slate-400 italic">No hay turnos registrados aún. Agrega tu primer turno arriba.</td>
+                          <td colSpan={6} className="p-10 text-center text-slate-400 italic">No hay turnos registrados aún. Agrega tu primer turno arriba.</td>
                         </tr>
                       ) : (
                         records.map((record) => (
@@ -706,6 +720,9 @@ export default function App() {
                             className="hover:bg-slate-50/50 transition-colors"
                           >
                             <td className="p-4 text-sm font-medium text-slate-700">{record.date}</td>
+                            <td className="p-4 text-xs font-mono text-slate-500">
+                              {record.startTime} - {record.endTime === '00:00' ? '00:00 (Siguiente día)' : record.endTime}
+                            </td>
                             <td className="p-4 text-xs font-mono font-bold">
                               <span className="text-amber-600">{record.hours.day}</span>
                               <span className="text-slate-300 mx-1">/</span>
