@@ -61,7 +61,7 @@ interface ErrorBoundaryState {
   error: Error | null;
 }
 
-class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
     this.state = { hasError: false, error: null };
@@ -236,9 +236,12 @@ export default function App() {
 }
 
 function MainApp() {
+  console.log("MainApp: Rendering...");
   // --- Auth State ---
   const [user, setUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   // --- State ---
   const [rates, setRates] = useState<Rates>(DEFAULT_RATES);
@@ -261,12 +264,46 @@ function MainApp() {
 
   // --- Auth Effect ---
   useEffect(() => {
+    console.log("App: Component mounted");
+    console.log("Auth Effect: Setting up listener...");
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      console.log("Auth State Changed:", currentUser ? `User ${currentUser.uid}` : "No user");
       setUser(currentUser);
       setIsAuthReady(true);
     });
     return () => unsubscribe();
   }, []);
+
+  const handleLogin = async () => {
+    console.log("Login button clicked - Start");
+    setIsLoggingIn(true);
+    setAuthError(null);
+    try {
+      console.log("Calling signInWithGoogle...");
+      const result = await signInWithGoogle();
+      console.log("Login successful:", result.user.uid);
+    } catch (error) {
+      console.error("Detailed Login error:", error);
+      let message = "Error al iniciar sesión. Por favor, intenta de nuevo.";
+      if (error instanceof Error) {
+        console.log("Error name:", error.name);
+        console.log("Error message:", error.message);
+        if (error.message.includes('popup-blocked')) {
+          message = "El navegador bloqueó la ventana emergente. Por favor, permite las ventanas emergentes para este sitio.";
+        } else if (error.message.includes('auth/unauthorized-domain')) {
+          message = "Este dominio no está autorizado en la consola de Firebase. Por favor, contacta al administrador.";
+        } else if (error.message.includes('auth/cancelled-popup-request')) {
+          message = "La ventana de inicio de sesión se cerró antes de completar el proceso.";
+        } else {
+          message = `Error técnico: ${error.message}`;
+        }
+      }
+      setAuthError(message);
+    } finally {
+      setIsLoggingIn(false);
+      console.log("Login flow finished");
+    }
+  };
 
   // --- Firestore Sync ---
   useEffect(() => {
@@ -679,12 +716,23 @@ function MainApp() {
             <p className="text-slate-500 text-sm">Gestiona tus turnos y liquidaciones de forma segura en la nube.</p>
           </div>
           <div className="space-y-4">
+            {authError && (
+              <div className="p-3 bg-rose-50 text-rose-600 text-xs rounded-xl flex items-center gap-2 border border-rose-100">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <p className="text-left">{authError}</p>
+              </div>
+            )}
             <button 
-              onClick={signInWithGoogle}
-              className="w-full py-4 flex items-center justify-center gap-3 bg-white border-2 border-slate-100 rounded-2xl font-bold text-slate-700 hover:bg-slate-50 hover:border-indigo-100 transition-all shadow-sm"
+              onClick={handleLogin}
+              disabled={isLoggingIn}
+              className={`w-full py-4 flex items-center justify-center gap-3 bg-white border-2 border-slate-100 rounded-2xl font-bold text-slate-700 transition-all shadow-sm ${isLoggingIn ? 'opacity-50 cursor-not-allowed' : 'hover:bg-slate-50 hover:border-indigo-100'}`}
             >
-              <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
-              Continuar con Google
+              {isLoggingIn ? (
+                <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
+              )}
+              {isLoggingIn ? "Iniciando sesión..." : "Continuar con Google"}
             </button>
             <p className="text-[10px] text-slate-400">
               Al continuar, tus datos se guardarán automáticamente en tu cuenta personal.

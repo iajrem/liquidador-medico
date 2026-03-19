@@ -4,13 +4,22 @@ import { getFirestore, collection, doc, setDoc, getDoc, getDocs, query, where, o
 import firebaseConfig from '../firebase-applet-config.json';
 
 // Initialize Firebase SDK
+console.log("Firebase SDK: Initializing with config...", firebaseConfig.projectId);
+if (!firebaseConfig || !firebaseConfig.apiKey || firebaseConfig.apiKey.includes('TODO')) {
+  console.error("Firebase configuration is missing or contains placeholders. Please run the Firebase setup.");
+}
+
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+console.log("Firebase SDK: Auth and Firestore initialized");
 export const googleProvider = new GoogleAuthProvider();
 
 // Auth Helpers
-export const signInWithGoogle = () => signInWithPopup(auth, googleProvider);
+export const signInWithGoogle = () => {
+  console.log("Firebase SDK: Attempting signInWithPopup...");
+  return signInWithPopup(auth, googleProvider);
+};
 export const logout = () => signOut(auth);
 
 // Error Handling Spec for Firestore Operations
