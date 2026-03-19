@@ -25,9 +25,90 @@ import {
   FolderOpen,
   FileText,
   Plus,
-  X
+  X,
+  LogIn,
+  LogOut,
+  User as UserIcon,
+  CheckCircle2 as CheckIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { 
+  auth, 
+  db, 
+  signInWithGoogle, 
+  logout, 
+  onAuthStateChanged, 
+  collection, 
+  doc, 
+  setDoc, 
+  onSnapshot, 
+  deleteDoc, 
+  updateDoc, 
+  handleFirestoreError, 
+  OperationType,
+  User
+} from './firebase';
+import { Component, ErrorInfo, ReactNode } from 'react';
+
+// --- Error Boundary ---
+
+interface ErrorBoundaryProps {
+  children: ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error("Uncaught error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      let errorMessage = "Algo salió mal.";
+      try {
+        const firestoreError = JSON.parse(this.state.error?.message || "{}");
+        if (firestoreError.error) {
+          errorMessage = `Error de base de datos: ${firestoreError.error}`;
+        }
+      } catch (e) {
+        errorMessage = this.state.error?.message || errorMessage;
+      }
+
+      return (
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+          <div className="bg-white p-8 rounded-3xl shadow-xl max-w-md w-full text-center space-y-4">
+            <div className="w-16 h-16 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto">
+              <AlertCircle className="w-8 h-8" />
+            </div>
+            <h1 className="text-xl font-bold text-slate-900">¡Ups! Ha ocurrido un error</h1>
+            <p className="text-slate-600 text-sm">{errorMessage}</p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all"
+            >
+              Recargar aplicación
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 // --- Types ---
 
@@ -100,6 +181,7 @@ interface Quantities {
 
 interface ShiftRecord {
   id: string;
+  userId: string;
   date: string;
   startTime: string;
   endTime: string;
@@ -146,6 +228,18 @@ const formatCurrency = (value: number) => {
 };
 
 export default function App() {
+  return (
+    <ErrorBoundary>
+      <MainApp />
+    </ErrorBoundary>
+  );
+}
+
+function MainApp() {
+  // --- Auth State ---
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+
   // --- State ---
   const [rates, setRates] = useState<Rates>(DEFAULT_RATES);
   const [shift, setShift] = useState<ShiftInput>({
@@ -164,6 +258,49 @@ export default function App() {
   });
   const [records, setRecords] = useState<ShiftRecord[]>([]);
   const [additionalDeductions, setAdditionalDeductions] = useState<Deduction[]>([]);
+
+  // --- Auth Effect ---
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setIsAuthReady(true);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // --- Firestore Sync ---
+  useEffect(() => {
+    if (!isAuthReady || !user) {
+      setRecords([]);
+      setAdditionalDeductions([]);
+      return;
+    }
+
+    const recordsPath = `users/${user.uid}/records`;
+    const unsubscribeRecords = onSnapshot(collection(db, recordsPath), (snapshot) => {
+      const recordsData = snapshot.docs.map(doc => doc.data() as ShiftRecord);
+      setRecords(recordsData.sort((a, b) => {
+        const dateA = new Date(`${a.date}T${a.startTime}`).getTime();
+        const dateB = new Date(`${b.date}T${b.startTime}`).getTime();
+        return dateA - dateB;
+      }));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, recordsPath);
+    });
+
+    const deductionsPath = `users/${user.uid}/deductions`;
+    const unsubscribeDeductions = onSnapshot(collection(db, deductionsPath), (snapshot) => {
+      const deductionsData = snapshot.docs.map(doc => doc.data() as Deduction);
+      setAdditionalDeductions(deductionsData);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, deductionsPath);
+    });
+
+    return () => {
+      unsubscribeRecords();
+      unsubscribeDeductions();
+    };
+  }, [isAuthReady, user]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [showDetails, setShowDetails] = useState(false);
   const [savedCalculations, setSavedCalculations] = useState<SavedCalculation[]>([]);
@@ -239,9 +376,12 @@ export default function App() {
   }, [shift.startTime, shift.endTime, shift.isHolidayStart, shift.isHolidayEnd, shift.isAVAShift]);
 
   // --- Actions ---
-  const addRecord = () => {
+  const addRecord = async () => {
+    if (!user) return;
+    const recordId = crypto.randomUUID();
     const newRecord: ShiftRecord = {
-      id: crypto.randomUUID(),
+      id: recordId,
+      userId: user.uid,
       date: shift.date,
       startTime: shift.startTime,
       endTime: shift.endTime,
@@ -252,27 +392,40 @@ export default function App() {
       isDefinitive: false, // Default to projection
     };
     
-    const updatedRecords = [...records, newRecord].sort((a, b) => {
-      const dateA = new Date(`${a.date}T${a.startTime}`).getTime();
-      const dateB = new Date(`${b.date}T${b.startTime}`).getTime();
-      return dateA - dateB;
-    });
-
-    setRecords(updatedRecords);
-    // Reset patient and AVA counts for next entry
-    setQuantities(prev => ({
-      ...prev,
-      ava: { day: 0, night: 0, holidayDay: 0, holidayNight: 0 },
-      patients: prev.applyPatients ? (shift.isAVAShift ? { ...prev.ava } : { ...prev.hours }) : { day: 0, night: 0, holidayDay: 0, holidayNight: 0 }
-    }));
+    const path = `users/${user.uid}/records/${recordId}`;
+    try {
+      await setDoc(doc(db, path), newRecord);
+      // Reset patient and AVA counts for next entry
+      setQuantities(prev => ({
+        ...prev,
+        ava: { day: 0, night: 0, holidayDay: 0, holidayNight: 0 },
+        patients: prev.applyPatients ? (shift.isAVAShift ? { ...prev.ava } : { ...prev.hours }) : { day: 0, night: 0, holidayDay: 0, holidayNight: 0 }
+      }));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, path);
+    }
   };
 
-  const removeRecord = (id: string) => {
-    setRecords(records.filter(r => r.id !== id));
+  const removeRecord = async (id: string) => {
+    if (!user) return;
+    const path = `users/${user.uid}/records/${id}`;
+    try {
+      await deleteDoc(doc(db, path));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    }
   };
 
-  const toggleRecordStatus = (id: string) => {
-    setRecords(records.map(r => r.id === id ? { ...r, isDefinitive: !r.isDefinitive } : r));
+  const toggleRecordStatus = async (id: string) => {
+    if (!user) return;
+    const record = records.find(r => r.id === id);
+    if (!record) return;
+    const path = `users/${user.uid}/records/${id}`;
+    try {
+      await updateDoc(doc(db, path), { isDefinitive: !record.isDefinitive });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, path);
+    }
   };
 
   const editRecord = (record: ShiftRecord) => {
@@ -381,21 +534,40 @@ export default function App() {
     }
   };
 
-  const addDeduction = () => {
-    setAdditionalDeductions([
-      ...additionalDeductions,
-      { id: crypto.randomUUID(), concept: '', amount: 0 }
-    ]);
+  const addDeduction = async () => {
+    if (!user) return;
+    const deductionId = crypto.randomUUID();
+    const deduction: Deduction = {
+      id: deductionId,
+      concept: '',
+      amount: 0
+    };
+    const path = `users/${user.uid}/deductions/${deductionId}`;
+    try {
+      await setDoc(doc(db, path), deduction);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, path);
+    }
   };
 
-  const updateDeduction = (id: string, field: 'concept' | 'amount', value: string | number) => {
-    setAdditionalDeductions(additionalDeductions.map(d => 
-      d.id === id ? { ...d, [field]: value } : d
-    ));
+  const updateDeduction = async (id: string, field: 'concept' | 'amount', value: string | number) => {
+    if (!user) return;
+    const path = `users/${user.uid}/deductions/${id}`;
+    try {
+      await updateDoc(doc(db, path), { [field]: value });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, path);
+    }
   };
 
-  const removeDeduction = (id: string) => {
-    setAdditionalDeductions(additionalDeductions.filter(d => d.id !== id));
+  const removeDeduction = async (id: string) => {
+    if (!user) return;
+    const path = `users/${user.uid}/deductions/${id}`;
+    try {
+      await deleteDoc(doc(db, path));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    }
   };
 
   // --- Calculations ---
@@ -483,6 +655,46 @@ export default function App() {
     };
   }, [records, rates, additionalDeductions]);
 
+  if (!isAuthReady) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white p-8 rounded-3xl shadow-xl max-w-md w-full text-center space-y-8"
+        >
+          <div className="w-20 h-20 bg-indigo-100 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto rotate-3">
+            <Calculator className="w-10 h-10" />
+          </div>
+          <div className="space-y-2">
+            <h1 className="text-2xl font-black text-slate-900 tracking-tight">Calculadora Médica</h1>
+            <p className="text-slate-500 text-sm">Gestiona tus turnos y liquidaciones de forma segura en la nube.</p>
+          </div>
+          <div className="space-y-4">
+            <button 
+              onClick={signInWithGoogle}
+              className="w-full py-4 flex items-center justify-center gap-3 bg-white border-2 border-slate-100 rounded-2xl font-bold text-slate-700 hover:bg-slate-50 hover:border-indigo-100 transition-all shadow-sm"
+            >
+              <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
+              Continuar con Google
+            </button>
+            <p className="text-[10px] text-slate-400">
+              Al continuar, tus datos se guardarán automáticamente en tu cuenta personal.
+            </p>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-900 font-sans selection:bg-indigo-100">
       {/* Header */}
@@ -496,12 +708,26 @@ export default function App() {
             <p className="text-xs text-slate-500 font-medium uppercase tracking-wider">Colombia 2026 • Jornada Legal</p>
           </div>
         </div>
-        <button 
-          onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-          className="lg:hidden p-2 hover:bg-slate-100 rounded-lg transition-colors"
-        >
-          <Settings className="w-5 h-5 text-slate-600" />
-        </button>
+        
+        <div className="flex items-center gap-4">
+          <div className="hidden sm:flex items-center gap-3 px-3 py-1.5 bg-slate-50 rounded-xl border border-slate-100">
+            <img src={user.photoURL || ''} alt={user.displayName || ''} className="w-6 h-6 rounded-full" />
+            <span className="text-xs font-bold text-slate-600">{user.displayName}</span>
+          </div>
+          <button 
+            onClick={logout}
+            className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"
+            title="Cerrar sesión"
+          >
+            <LogOut className="w-5 h-5" />
+          </button>
+          <button 
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            className="lg:hidden p-2 hover:bg-slate-100 rounded-lg transition-colors"
+          >
+            <Settings className="w-5 h-5 text-slate-600" />
+          </button>
+        </div>
       </header>
 
       <div className="flex flex-col lg:flex-row">

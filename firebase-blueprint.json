@@ -1,0 +1,87 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and settings",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    },
+    "ShiftRecord": {
+      "title": "Shift Record",
+      "description": "A single shift entry for a user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "date": { "type": "string" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "hours": {
+          "type": "object",
+          "properties": {
+            "day": { "type": "number" },
+            "night": { "type": "number" },
+            "holidayDay": { "type": "number" },
+            "holidayNight": { "type": "number" }
+          }
+        },
+        "ava": {
+          "type": "object",
+          "properties": {
+            "day": { "type": "number" },
+            "night": { "type": "number" },
+            "holidayDay": { "type": "number" },
+            "holidayNight": { "type": "number" }
+          }
+        },
+        "patients": {
+          "type": "object",
+          "properties": {
+            "day": { "type": "number" },
+            "night": { "type": "number" },
+            "holidayDay": { "type": "number" },
+            "holidayNight": { "type": "number" }
+          }
+        },
+        "applyPatients": { "type": "boolean" },
+        "isDefinitive": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "date", "startTime", "endTime"]
+    },
+    "Deduction": {
+      "title": "Additional Deduction",
+      "description": "Custom deductions for a user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "label": { "type": "string" },
+        "amount": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "label", "amount"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/users/{userId}/records/{recordId}": {
+      "schema": "ShiftRecord",
+      "description": "Shift records for a specific user"
+    },
+    "/users/{userId}/deductions/{deductionId}": {
+      "schema": "Deduction",
+      "description": "Custom deductions for a specific user"
+    }
+  }
+}
