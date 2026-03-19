@@ -18,12 +18,33 @@ import {
   TrendingUp,
   TrendingDown,
   Wallet,
+  CheckCircle2,
   Edit,
-  Trash2
+  Trash2,
+  Save,
+  FolderOpen,
+  FileText,
+  Plus,
+  X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // --- Types ---
+
+interface Deduction {
+  id: string;
+  concept: string;
+  amount: number;
+}
+
+interface SavedCalculation {
+  id: string;
+  name: string;
+  timestamp: string;
+  records: ShiftRecord[];
+  rates: Rates;
+  additionalDeductions: Deduction[];
+}
 
 interface Rates {
   hourly: {
@@ -86,6 +107,7 @@ interface ShiftRecord {
   ava: Quantities['ava'];
   patients: Quantities['patients'];
   applyPatients: boolean;
+  isDefinitive: boolean;
 }
 
 // --- Constants ---
@@ -141,8 +163,28 @@ export default function App() {
     applyPatients: true,
   });
   const [records, setRecords] = useState<ShiftRecord[]>([]);
+  const [additionalDeductions, setAdditionalDeductions] = useState<Deduction[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [showDetails, setShowDetails] = useState(false);
+  const [savedCalculations, setSavedCalculations] = useState<SavedCalculation[]>([]);
+  const [calcName, setCalcName] = useState('');
+
+  // Load saved calculations from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('med_payroll_saved');
+    if (saved) {
+      try {
+        setSavedCalculations(JSON.parse(saved));
+      } catch (e) {
+        console.error('Error loading saved calculations', e);
+      }
+    }
+  }, []);
+
+  // Save to localStorage whenever savedCalculations changes
+  useEffect(() => {
+    localStorage.setItem('med_payroll_saved', JSON.stringify(savedCalculations));
+  }, [savedCalculations]);
 
   // --- Logic: Calculate Hours Distribution ---
   useEffect(() => {
@@ -176,21 +218,21 @@ export default function App() {
         current.setMinutes(current.getMinutes() + 1);
       }
 
-      setQuantities(prev => ({
-        ...prev,
-        hours: shift.isAVAShift ? { day: 0, night: 0, holidayDay: 0, holidayNight: 0 } : {
+      setQuantities(prev => {
+        const h = {
           day: Math.round((minsD / 60) * 100) / 100,
           night: Math.round((minsN / 60) * 100) / 100,
           holidayDay: Math.round((minsDF / 60) * 100) / 100,
           holidayNight: Math.round((minsNF / 60) * 100) / 100,
-        },
-        ava: shift.isAVAShift ? {
-          day: Math.round((minsD / 60) * 100) / 100,
-          night: Math.round((minsN / 60) * 100) / 100,
-          holidayDay: Math.round((minsDF / 60) * 100) / 100,
-          holidayNight: Math.round((minsNF / 60) * 100) / 100,
-        } : prev.ava
-      }));
+        };
+
+        return {
+          ...prev,
+          hours: shift.isAVAShift ? { day: 0, night: 0, holidayDay: 0, holidayNight: 0 } : h,
+          ava: shift.isAVAShift ? h : prev.ava,
+          patients: prev.applyPatients ? h : prev.patients
+        };
+      });
     };
 
     calculateDistribution();
@@ -207,6 +249,7 @@ export default function App() {
       ava: { ...quantities.ava },
       patients: { ...quantities.patients },
       applyPatients: quantities.applyPatients,
+      isDefinitive: false, // Default to projection
     };
     
     const updatedRecords = [...records, newRecord].sort((a, b) => {
@@ -220,12 +263,16 @@ export default function App() {
     setQuantities(prev => ({
       ...prev,
       ava: { day: 0, night: 0, holidayDay: 0, holidayNight: 0 },
-      patients: { day: 0, night: 0, holidayDay: 0, holidayNight: 0 }
+      patients: prev.applyPatients ? (shift.isAVAShift ? { ...prev.ava } : { ...prev.hours }) : { day: 0, night: 0, holidayDay: 0, holidayNight: 0 }
     }));
   };
 
   const removeRecord = (id: string) => {
     setRecords(records.filter(r => r.id !== id));
+  };
+
+  const toggleRecordStatus = (id: string) => {
+    setRecords(records.map(r => r.id === id ? { ...r, isDefinitive: !r.isDefinitive } : r));
   };
 
   const editRecord = (record: ShiftRecord) => {
@@ -246,13 +293,127 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const exportToCSV = () => {
+    if (records.length === 0) {
+      alert('No hay registros para exportar.');
+      return;
+    }
+
+    const headers = [
+      'Fecha', 'Inicio', 'Fin', 'Estado',
+      'Horas Diu', 'Horas Noc', 'Horas F-Diu', 'Horas F-Noc',
+      'AVA Diu', 'AVA Noc', 'AVA F-Diu', 'AVA F-Noc',
+      'Pac Diu', 'Pac Noc', 'Pac F-Diu', 'Pac F-Noc'
+    ];
+
+    const rows = records.map(r => [
+      r.date, r.startTime, r.endTime, r.isDefinitive ? 'Definitivo' : 'Proyección',
+      r.hours.day, r.hours.night, r.hours.holidayDay, r.hours.holidayNight,
+      r.ava.day, r.ava.night, r.ava.holidayDay, r.ava.holidayNight,
+      r.applyPatients ? r.patients.day : 0, 
+      r.applyPatients ? r.patients.night : 0, 
+      r.applyPatients ? r.patients.holidayDay : 0, 
+      r.applyPatients ? r.patients.holidayNight : 0
+    ]);
+
+    // Add summary
+    rows.push([]);
+    rows.push(['RESUMEN']);
+    rows.push(['Total Bruto', results.gross]);
+    rows.push(['Deducciones Legales', results.legalDeductions]);
+    rows.push(['Deducciones Adicionales', results.additionalDeductions]);
+    rows.push(['Neto a Pagar', results.net]);
+
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `liquidacion_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // --- Persistence Actions ---
+  const saveCurrentCalculation = () => {
+    if (!calcName.trim()) {
+      alert('Por favor, ingresa un nombre para guardar la liquidación.');
+      return;
+    }
+    if (records.length === 0) {
+      alert('No hay turnos para guardar.');
+      return;
+    }
+
+    const newSaved: SavedCalculation = {
+      id: crypto.randomUUID(),
+      name: calcName.trim(),
+      timestamp: new Date().toLocaleString(),
+      records: [...records],
+      rates: { ...rates },
+      additionalDeductions: additionalDeductions
+    };
+
+    setSavedCalculations([newSaved, ...savedCalculations]);
+    setCalcName('');
+    alert('Liquidación guardada con éxito.');
+  };
+
+  const loadCalculation = (saved: SavedCalculation) => {
+    if (records.length > 0 && !confirm('¿Estás seguro? Se perderán los datos actuales no guardados.')) {
+      return;
+    }
+    setRecords(saved.records);
+    setRates(saved.rates);
+    setAdditionalDeductions(Array.isArray(saved.additionalDeductions) ? saved.additionalDeductions : []);
+    alert(`Liquidación "${saved.name}" cargada.`);
+  };
+
+  const deleteSavedCalculation = (id: string) => {
+    if (confirm('¿Eliminar esta liquidación guardada?')) {
+      setSavedCalculations(savedCalculations.filter(s => s.id !== id));
+    }
+  };
+
+  const addDeduction = () => {
+    setAdditionalDeductions([
+      ...additionalDeductions,
+      { id: crypto.randomUUID(), concept: '', amount: 0 }
+    ]);
+  };
+
+  const updateDeduction = (id: string, field: 'concept' | 'amount', value: string | number) => {
+    setAdditionalDeductions(additionalDeductions.map(d => 
+      d.id === id ? { ...d, [field]: value } : d
+    ));
+  };
+
+  const removeDeduction = (id: string) => {
+    setAdditionalDeductions(additionalDeductions.filter(d => d.id !== id));
+  };
+
   // --- Calculations ---
   const results = useMemo(() => {
     let totalH = 0;
     let totalP = 0;
     let totalAVA = 0;
 
+    const hoursBreakdown = { day: 0, night: 0, holidayDay: 0, holidayNight: 0 };
+    const patientsBreakdown = { day: 0, night: 0, holidayDay: 0, holidayNight: 0 };
+
     records.forEach(record => {
+      // Hours
+      hoursBreakdown.day += record.hours.day;
+      hoursBreakdown.night += record.hours.night;
+      hoursBreakdown.holidayDay += record.hours.holidayDay;
+      hoursBreakdown.holidayNight += record.hours.holidayNight;
+
       totalH += 
         (record.hours.day * rates.hourly.day) +
         (record.hours.night * rates.hourly.night) +
@@ -266,6 +427,11 @@ export default function App() {
         (record.ava.holidayNight * rates.ava.holidayNight);
 
       if (record.applyPatients) {
+        patientsBreakdown.day += record.patients.day;
+        patientsBreakdown.night += record.patients.night;
+        patientsBreakdown.holidayDay += record.patients.holidayDay;
+        patientsBreakdown.holidayNight += record.patients.holidayNight;
+
         totalP += 
           (record.patients.day * rates.patient.day) +
           (record.patients.night * rates.patient.night) +
@@ -273,6 +439,9 @@ export default function App() {
           (record.patients.holidayNight * rates.patient.holidayNight);
       }
     });
+
+    const totalMonthlyHours = hoursBreakdown.day + hoursBreakdown.night + hoursBreakdown.holidayDay + hoursBreakdown.holidayNight;
+    const totalMonthlyPatients = patientsBreakdown.day + patientsBreakdown.night + patientsBreakdown.holidayDay + patientsBreakdown.holidayNight;
 
     const gross = totalH + totalP + totalAVA;
     const ibc = gross;
@@ -290,7 +459,9 @@ export default function App() {
       else fsp = ibc * 0.02;
     }
 
-    const totalDeductions = health + pension + fsp;
+    const sumAdditionalDeductions = additionalDeductions.reduce((sum, d) => sum + d.amount, 0);
+    const legalDeductions = health + pension + fsp;
+    const totalDeductions = legalDeductions + sumAdditionalDeductions;
     const net = gross - totalDeductions;
 
     return {
@@ -301,10 +472,16 @@ export default function App() {
       health,
       pension,
       fsp,
+      legalDeductions,
+      additionalDeductions: sumAdditionalDeductions,
       totalDeductions,
-      net
+      net,
+      hoursBreakdown,
+      patientsBreakdown,
+      totalMonthlyHours,
+      totalMonthlyPatients
     };
-  }, [records, rates]);
+  }, [records, rates, additionalDeductions]);
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-900 font-sans selection:bg-indigo-100">
@@ -459,7 +636,100 @@ export default function App() {
                     ))}
                   </div>
                 </div>
+                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Deducciones Adicionales ($)</h3>
+                    <button 
+                      onClick={addDeduction}
+                      className="p-1.5 bg-indigo-100 text-indigo-600 rounded-lg hover:bg-indigo-200 transition-colors"
+                      title="Agregar concepto de deducción"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    {additionalDeductions.length === 0 ? (
+                      <p className="text-[10px] text-slate-400 italic text-center py-2">No hay deducciones adicionales registradas</p>
+                    ) : (
+                      additionalDeductions.map((deduction) => (
+                        <div key={deduction.id} className="p-3 bg-white border border-slate-200 rounded-xl space-y-2 relative group">
+                          <button 
+                            onClick={() => removeDeduction(deduction.id)}
+                            className="absolute -top-2 -right-2 w-5 h-5 bg-rose-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                          
+                          <div>
+                            <label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Concepto</label>
+                            <input 
+                              type="text"
+                              value={deduction.concept}
+                              onChange={(e) => updateDeduction(deduction.id, 'concept', e.target.value)}
+                              placeholder="Ej: Cooperativa"
+                              className="w-full bg-slate-50 border border-slate-100 rounded-lg py-1.5 px-3 text-xs focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                            />
+                          </div>
+                          
+                          <div>
+                            <label className="block text-[9px] font-bold text-slate-400 uppercase mb-1">Monto</label>
+                            <div className="relative">
+                              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">$</span>
+                              <input 
+                                type="number"
+                                value={deduction.amount}
+                                onChange={(e) => updateDeduction(deduction.id, 'amount', Number(e.target.value))}
+                                className="w-full bg-slate-50 border border-slate-100 rounded-lg py-1.5 pl-5 pr-3 text-xs focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
               </div>
+            </section>
+
+            <section className="pt-6 border-t border-slate-100">
+              <div className="flex items-center gap-2 mb-4 text-indigo-600">
+                <FolderOpen className="w-4 h-4" />
+                <h2 className="text-sm font-bold uppercase tracking-widest">Liquidaciones Guardadas</h2>
+              </div>
+              
+              {savedCalculations.length === 0 ? (
+                <div className="bg-slate-50 p-4 rounded-2xl border border-dashed border-slate-200 text-center">
+                  <p className="text-[10px] text-slate-400 uppercase font-bold">No hay guardadas</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {savedCalculations.map((saved) => (
+                    <div 
+                      key={saved.id}
+                      className="group bg-white border border-slate-200 rounded-2xl p-3 hover:border-indigo-300 hover:shadow-sm transition-all cursor-pointer"
+                      onClick={() => loadCalculation(saved)}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <FileText className="w-3 h-3 text-slate-400 shrink-0" />
+                          <span className="text-xs font-bold text-slate-700 truncate">{saved.name}</span>
+                        </div>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteSavedCalculation(saved.id);
+                          }}
+                          className="p-1 text-slate-300 hover:text-rose-500 transition-colors"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                      <div className="mt-1 text-[9px] text-slate-400 font-medium">{saved.timestamp}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
           </div>
         </aside>
@@ -623,7 +893,14 @@ export default function App() {
                       <input 
                         type="checkbox" 
                         checked={quantities.applyPatients}
-                        onChange={(e) => setQuantities({ ...quantities, applyPatients: e.target.checked })}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setQuantities(prev => ({ 
+                            ...prev, 
+                            applyPatients: checked,
+                            patients: checked ? (shift.isAVAShift ? { ...prev.ava } : { ...prev.hours }) : prev.patients
+                          }));
+                        }}
                         className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                       />
                       <span className="text-xs text-slate-600">Aplica cobro</span>
@@ -701,6 +978,7 @@ export default function App() {
                       <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Horas Ord/Fest</th>
                       <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Horas AVA</th>
                       <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Pacientes</th>
+                      <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">Estado</th>
                       <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Acciones</th>
                     </tr>
                   </thead>
@@ -756,6 +1034,29 @@ export default function App() {
                                 <span className="text-slate-300 italic font-normal">No aplica</span>
                               )}
                             </td>
+                            <td className="p-4 text-center">
+                              <button 
+                                onClick={() => toggleRecordStatus(record.id)}
+                                className={`group relative px-3 py-1.5 rounded-xl text-[10px] font-bold transition-all flex items-center gap-1.5 mx-auto ${
+                                  record.isDefinitive 
+                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
+                                    : 'bg-amber-50 text-amber-700 border border-amber-200 hover:bg-emerald-600 hover:text-white hover:border-emerald-600'
+                                }`}
+                                title={record.isDefinitive ? "Confirmado" : "Click para confirmar como definitivo"}
+                              >
+                                {record.isDefinitive ? (
+                                  <>
+                                    <CheckCircle2 className="w-3 h-3" />
+                                    <span>Definitivo</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <div className="w-1.5 h-1.5 rounded-full bg-amber-500 group-hover:bg-white animate-pulse" />
+                                    <span>Proyección</span>
+                                  </>
+                                )}
+                              </button>
+                            </td>
                             <td className="p-4 text-right flex items-center justify-end gap-2">
                               <button 
                                 onClick={() => editRecord(record)}
@@ -782,6 +1083,44 @@ export default function App() {
             </div>
           </section>
 
+          {/* Save Calculation */}
+          {records.length > 0 && (
+            <section className="bg-indigo-50 p-6 rounded-3xl border border-indigo-100 flex flex-col md:flex-row items-center gap-4">
+              <div className="flex items-center gap-3 shrink-0">
+                <div className="bg-white p-2 rounded-xl shadow-sm">
+                  <Save className="text-indigo-600 w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800">Guardar Liquidación</h3>
+                  <p className="text-[10px] text-slate-500 uppercase font-bold">Persiste tus datos localmente</p>
+                </div>
+              </div>
+              <div className="flex-1 w-full flex gap-2">
+                <input 
+                  type="text" 
+                  placeholder="Nombre de la liquidación (ej: Marzo 2026)"
+                  value={calcName}
+                  onChange={(e) => setCalcName(e.target.value)}
+                  className="flex-1 bg-white border border-indigo-200 rounded-xl px-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                />
+                <button 
+                  onClick={saveCurrentCalculation}
+                  className="bg-indigo-600 text-white px-6 py-2 rounded-xl text-sm font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 flex items-center gap-2"
+                >
+                  <Save className="w-4 h-4" />
+                  Guardar
+                </button>
+                <button 
+                  onClick={exportToCSV}
+                  className="bg-emerald-600 text-white px-6 py-2 rounded-xl text-sm font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 flex items-center gap-2"
+                >
+                  <FileText className="w-4 h-4" />
+                  Exportar CSV
+                </button>
+              </div>
+            </section>
+          )}
+
           {/* Step 4: Results */}
           <section className="space-y-6">
             <div className="flex items-center gap-3">
@@ -791,6 +1130,76 @@ export default function App() {
 
             {records.length > 0 ? (
               <>
+                {/* Reporte de Cantidades */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <motion.div 
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm"
+                  >
+                    <div className="flex items-center gap-2 text-indigo-600 mb-4">
+                      <Clock className="w-4 h-4" />
+                      <h3 className="text-xs font-bold uppercase tracking-widest">Reporte de Horas Mensuales</h3>
+                    </div>
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center text-sm">
+                        <span className="text-slate-500">Horas Diurnas</span>
+                        <span className="font-bold text-slate-700">{results.hoursBreakdown.day}h</span>
+                      </div>
+                      <div className="flex justify-between items-center text-sm">
+                        <span className="text-slate-500">Horas Nocturnas</span>
+                        <span className="font-bold text-slate-700">{results.hoursBreakdown.night}h</span>
+                      </div>
+                      <div className="flex justify-between items-center text-sm">
+                        <span className="text-slate-500">Horas Festivas Diurnas</span>
+                        <span className="font-bold text-slate-700">{results.hoursBreakdown.holidayDay}h</span>
+                      </div>
+                      <div className="flex justify-between items-center text-sm">
+                        <span className="text-slate-500">Horas Festivas Nocturnas</span>
+                        <span className="font-bold text-slate-700">{results.hoursBreakdown.holidayNight}h</span>
+                      </div>
+                      <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
+                        <span className="text-xs font-bold text-slate-400 uppercase">Total Horas</span>
+                        <span className="text-lg font-black text-indigo-600 font-mono">{results.totalMonthlyHours}h</span>
+                      </div>
+                    </div>
+                  </motion.div>
+
+                  <motion.div 
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.1 }}
+                    className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm"
+                  >
+                    <div className="flex items-center gap-2 text-emerald-600 mb-4">
+                      <Users className="w-4 h-4" />
+                      <h3 className="text-xs font-bold uppercase tracking-widest">Reporte de Pacientes</h3>
+                    </div>
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center text-sm">
+                        <span className="text-slate-500">Pacientes Diurnos</span>
+                        <span className="font-bold text-slate-700">{results.patientsBreakdown.day}</span>
+                      </div>
+                      <div className="flex justify-between items-center text-sm">
+                        <span className="text-slate-500">Pacientes Nocturnos</span>
+                        <span className="font-bold text-slate-700">{results.patientsBreakdown.night}</span>
+                      </div>
+                      <div className="flex justify-between items-center text-sm">
+                        <span className="text-slate-500">Pacientes Festivos Diurnos</span>
+                        <span className="font-bold text-slate-700">{results.patientsBreakdown.holidayDay}</span>
+                      </div>
+                      <div className="flex justify-between items-center text-sm">
+                        <span className="text-slate-500">Pacientes Festivos Nocturnos</span>
+                        <span className="font-bold text-slate-700">{results.patientsBreakdown.holidayNight}</span>
+                      </div>
+                      <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
+                        <span className="text-xs font-bold text-slate-400 uppercase">Total Pacientes</span>
+                        <span className="text-lg font-black text-emerald-600 font-mono">{results.totalMonthlyPatients}</span>
+                      </div>
+                    </div>
+                  </motion.div>
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                   <motion.div 
                     whileHover={{ y: -4 }}
@@ -812,8 +1221,8 @@ export default function App() {
                       <TrendingDown className="w-4 h-4" />
                       <span className="text-[10px] font-bold uppercase tracking-widest">Total Deducido</span>
                     </div>
-                    <div className="text-2xl font-black text-rose-600 font-mono">-{formatCurrency(results.totalDeducciones)}</div>
-                    <div className="mt-2 text-[10px] text-slate-400 font-medium">Salud, Pensión y FSP</div>
+                    <div className="text-2xl font-black text-rose-600 font-mono">-{formatCurrency(results.totalDeductions)}</div>
+                    <div className="mt-2 text-[10px] text-slate-400 font-medium">Legales + Adicionales</div>
                   </motion.div>
 
                   <motion.div 
@@ -892,9 +1301,19 @@ export default function App() {
                                     <td className="py-2 text-slate-600">FSP (Solidaridad)</td>
                                     <td className="py-2 text-right font-mono font-medium">{formatCurrency(results.fsp)}</td>
                                   </tr>
-                                  <tr className="font-bold text-rose-600">
+                                  <tr className="border-t border-slate-100">
+                                    <td className="py-2 text-slate-500 italic">Total Deducciones Legales</td>
+                                    <td className="py-2 text-right font-mono text-slate-500">{formatCurrency(results.legalDeductions)}</td>
+                                  </tr>
+                                  {additionalDeductions.map((d) => (
+                                    <tr key={d.id}>
+                                      <td className="py-2 text-indigo-600 font-medium">{d.concept || 'Sin concepto'}</td>
+                                      <td className="py-2 text-right font-mono font-bold text-indigo-600">{formatCurrency(d.amount)}</td>
+                                    </tr>
+                                  ))}
+                                  <tr className="font-bold text-rose-600 border-t-2 border-slate-100">
                                     <td className="py-3">Total Deducciones</td>
-                                    <td className="py-3 text-right font-mono">{formatCurrency(results.totalDeducciones)}</td>
+                                    <td className="py-3 text-right font-mono">{formatCurrency(results.totalDeductions)}</td>
                                   </tr>
                                 </tbody>
                               </table>
