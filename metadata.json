@@ -1,5 +1,5 @@
 {
-  "name": "Liquidador Médico EMI",
-  "description": "Calculadora de nómina médica para contratos a término indefinido en Colombia, incluyendo Retefuente, Primas y Provisiones.",
+  "name": "EMI pagos",
+  "description": "Calculadora de nómina médica para contratos EMI en Colombia, incluyendo Retefuente, Primas y Provisiones.",
   "requestFramePermissions": []
 }
