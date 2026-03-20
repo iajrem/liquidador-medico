@@ -147,6 +147,15 @@ interface Rates {
     holidayDay: number;
     holidayNight: number;
   };
+  payroll: {
+    uvtValue: number;
+    dependents: number; // Max 10% of gross or 32 UVT
+    prepagada: number; // Max 16 UVT
+    pensionVoluntaria: number; // Max 30% of income or 3800 UVT/year
+    primaPercentage: number;
+    primaBaseAverage: number;
+    vacationProvisionRate: number; // Usually 4.17%
+  };
 }
 
 interface ShiftInput {
@@ -215,6 +224,15 @@ const DEFAULT_RATES: Rates = {
     night: 13776.26,
     holidayDay: 17856.47,
     holidayNight: 21426.00,
+  },
+  payroll: {
+    uvtValue: 49786, // Estimated for 2026
+    dependents: 0,
+    prepagada: 0,
+    pensionVoluntaria: 0,
+    primaPercentage: 0,
+    primaBaseAverage: 0,
+    vacationProvisionRate: 4.17,
   }
 };
 
@@ -671,8 +689,44 @@ function MainApp() {
 
     const sumAdditionalDeductions = additionalDeductions.reduce((sum, d) => sum + d.amount, 0);
     const legalDeductions = health + pension + fsp;
-    const totalDeductions = legalDeductions + sumAdditionalDeductions;
-    const net = gross - totalDeductions;
+
+    // --- Prima No Constitutiva ---
+    const primaNoConstitutiva = (rates.payroll.primaBaseAverage * rates.payroll.primaPercentage) / 100;
+
+    // --- Retefuente Calculation (Procedimiento 1) ---
+    const uvt = rates.payroll.uvtValue;
+    // The tax base includes all income received this month
+    const totalIncomeForTax = gross + primaNoConstitutiva;
+    const baseGravable1 = totalIncomeForTax - legalDeductions;
+    
+    // Deductions allowed (capped)
+    const dedDependents = Math.min(totalIncomeForTax * 0.1, 32 * uvt);
+    const dedPrepagada = Math.min(rates.payroll.prepagada, 16 * uvt);
+    const dedPensionVol = Math.min(rates.payroll.pensionVoluntaria, totalIncomeForTax * 0.3);
+    
+    const subtotal1 = baseGravable1 - dedDependents - dedPrepagada - dedPensionVol;
+    
+    // 25% Exempt Income (Capped at 790 UVT/year -> 65.8 UVT/month)
+    const exempt25 = Math.min(subtotal1 * 0.25, 65.8 * uvt);
+    
+    const baseGravableFinal = subtotal1 - exempt25;
+    const baseUVT = baseGravableFinal / uvt;
+    
+    let retefuente = 0;
+    if (baseUVT > 95) {
+      if (baseUVT <= 150) retefuente = (baseUVT - 95) * 0.19 * uvt;
+      else if (baseUVT <= 360) retefuente = ((baseUVT - 150) * 0.28 + 10) * uvt;
+      else if (baseUVT <= 640) retefuente = ((baseUVT - 360) * 0.33 + 69) * uvt;
+      else if (baseUVT <= 945) retefuente = ((baseUVT - 640) * 0.35 + 162) * uvt;
+      else if (baseUVT <= 2300) retefuente = ((baseUVT - 945) * 0.37 + 268) * uvt;
+      else retefuente = ((baseUVT - 2300) * 0.39 + 770) * uvt;
+    }
+
+    // --- Vacation Provision (Informative) ---
+    const vacationProvision = (gross * rates.payroll.vacationProvisionRate) / 100;
+
+    const totalDeductions = legalDeductions + sumAdditionalDeductions + retefuente;
+    const net = gross + primaNoConstitutiva - totalDeductions;
 
     return {
       totalH,
@@ -682,6 +736,9 @@ function MainApp() {
       health,
       pension,
       fsp,
+      retefuente,
+      primaNoConstitutiva,
+      vacationProvision,
       legalDeductions,
       additionalDeductions: sumAdditionalDeductions,
       totalDeductions,
@@ -980,6 +1037,103 @@ function MainApp() {
                         </div>
                       ))
                     )}
+                  </div>
+                </div>
+
+                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Parámetros de Nómina (Indefinido)</h3>
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1">
+                        Valor UVT 2026
+                        <span title="Unidad de Valor Tributario para el año 2026 (estimado)"><Info className="w-3 h-3 text-slate-400" /></span>
+                      </label>
+                      <input 
+                        type="number"
+                        value={rates.payroll.uvtValue}
+                        onChange={(e) => setRates({
+                          ...rates,
+                          payroll: { ...rates.payroll, uvtValue: Number(e.target.value) }
+                        })}
+                        className="w-full bg-white border border-slate-200 rounded-xl py-2 px-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1">
+                        Deducción por Dependientes ($)
+                        <span title="Deducción mensual por personas a cargo (máx 10% ingreso o 32 UVT)"><Info className="w-3 h-3 text-slate-400" /></span>
+                      </label>
+                      <input 
+                        type="number"
+                        value={rates.payroll.dependents}
+                        onChange={(e) => setRates({
+                          ...rates,
+                          payroll: { ...rates.payroll, dependents: Number(e.target.value) }
+                        })}
+                        className="w-full bg-white border border-slate-200 rounded-xl py-2 px-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1">
+                        Medicina Prepagada ($)
+                        <span title="Pagos mensuales por salud prepagada (máx 16 UVT)"><Info className="w-3 h-3 text-slate-400" /></span>
+                      </label>
+                      <input 
+                        type="number"
+                        value={rates.payroll.prepagada}
+                        onChange={(e) => setRates({
+                          ...rates,
+                          payroll: { ...rates.payroll, prepagada: Number(e.target.value) }
+                        })}
+                        className="w-full bg-white border border-slate-200 rounded-xl py-2 px-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1">
+                        Pensión Voluntaria ($)
+                        <span title="Aportes a pensiones voluntarias o AFC (máx 30% ingreso)"><Info className="w-3 h-3 text-slate-400" /></span>
+                      </label>
+                      <input 
+                        type="number"
+                        value={rates.payroll.pensionVoluntaria}
+                        onChange={(e) => setRates({
+                          ...rates,
+                          payroll: { ...rates.payroll, pensionVoluntaria: Number(e.target.value) }
+                        })}
+                        className="w-full bg-white border border-slate-200 rounded-xl py-2 px-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono"
+                      />
+                    </div>
+                    <div className="h-px bg-slate-200 my-2" />
+                    <div>
+                      <label className="block text-[10px] font-bold text-indigo-500 uppercase mb-1 flex items-center gap-1">
+                        Base Promedio Prima ($)
+                        <span title="Promedio de ingresos de los últimos meses para el cálculo de la prima"><Info className="w-3 h-3 text-indigo-400" /></span>
+                      </label>
+                      <input 
+                        type="number"
+                        value={rates.payroll.primaBaseAverage}
+                        onChange={(e) => setRates({
+                          ...rates,
+                          payroll: { ...rates.payroll, primaBaseAverage: Number(e.target.value) }
+                        })}
+                        className="w-full bg-white border border-indigo-100 rounded-xl py-2 px-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-indigo-500 uppercase mb-1 flex items-center gap-1">
+                        % Prima No Constitutiva
+                        <span title="Porcentaje de la prima que no constituye salario"><Info className="w-3 h-3 text-indigo-400" /></span>
+                      </label>
+                      <input 
+                        type="number"
+                        value={rates.payroll.primaPercentage}
+                        onChange={(e) => setRates({
+                          ...rates,
+                          payroll: { ...rates.payroll, primaPercentage: Number(e.target.value) }
+                        })}
+                        className="w-full bg-white border border-indigo-100 rounded-xl py-2 px-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1594,9 +1748,13 @@ function MainApp() {
                                     <td className="py-2 text-slate-600">FSP (Solidaridad)</td>
                                     <td className="py-2 text-right font-mono font-medium">{formatCurrency(results.fsp)}</td>
                                   </tr>
+                                  <tr>
+                                    <td className="py-2 text-indigo-600 font-bold">Retención en la Fuente</td>
+                                    <td className="py-2 text-right font-mono font-bold text-indigo-600">{formatCurrency(results.retefuente)}</td>
+                                  </tr>
                                   <tr className="border-t border-slate-100">
                                     <td className="py-2 text-slate-500 italic">Total Deducciones Legales</td>
-                                    <td className="py-2 text-right font-mono text-slate-500">{formatCurrency(results.legalDeductions)}</td>
+                                    <td className="py-2 text-right font-mono text-slate-500">{formatCurrency(results.legalDeductions + results.retefuente)}</td>
                                   </tr>
                                   {additionalDeductions.map((d) => (
                                     <tr key={d.id}>
@@ -1610,10 +1768,36 @@ function MainApp() {
                                   </tr>
                                 </tbody>
                               </table>
+                              
+                              <div className="space-y-4 mt-6 pt-6 border-t border-slate-100">
+                                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">✨ Beneficios y Provisiones</h4>
+                                <div className="space-y-3">
+                                  <div className="flex justify-between items-center p-3 bg-indigo-50 rounded-xl border border-indigo-100">
+                                    <div className="flex items-center gap-2">
+                                      <div>
+                                        <span className="text-sm text-indigo-700 font-bold">Prima No Constitutiva</span>
+                                        <p className="text-[10px] text-indigo-500">Calculada sobre acumulado promedio</p>
+                                      </div>
+                                      <span title="Pago extra que no constituye salario para aportes pero sí para Retefuente."><Info className="w-3.5 h-3.5 text-indigo-400" /></span>
+                                    </div>
+                                    <span className="font-bold font-mono text-indigo-700">+{formatCurrency(results.primaNoConstitutiva)}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center p-3 bg-emerald-50 rounded-xl border border-emerald-100">
+                                    <div className="flex items-center gap-2">
+                                      <div>
+                                        <span className="text-sm text-emerald-700 font-bold">Provisión Vacaciones</span>
+                                        <p className="text-[10px] text-emerald-500">Informativo (4.17%)</p>
+                                      </div>
+                                      <span title="Monto que el empleador reserva mensualmente para tus vacaciones (15 días por año)."><Info className="w-3.5 h-3.5 text-emerald-400" /></span>
+                                    </div>
+                                    <span className="font-bold font-mono text-emerald-700">{formatCurrency(results.vacationProvision)}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
                               <p className="text-[10px] text-slate-400 italic mt-4">* ARL: Asumida por el empleador. El FSP aplica si el total mensual supera 4 salarios mínimos.</p>
                             </div>
                           </div>
-                        </div>
                       </motion.div>
                     )}
                   </AnimatePresence>

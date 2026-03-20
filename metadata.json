@@ -1,5 +1,5 @@
 {
-  "name": "Liquidador Médico Laboral buena",
-  "description": "Calculadora de nómina médica por turnos y pacientes con deducciones de ley en Colombia.\n\n",
+  "name": "Liquidador Médico Laboral (Indefinido)",
+  "description": "Calculadora de nómina médica para contratos a término indefinido en Colombia, incluyendo Retefuente, Primas y Provisiones.",
   "requestFramePermissions": []
 }

@@ -1,11 +1,11 @@
 {
-  "name": "Liquidador Médico",
+  "name": "Liquidador Médico Laboral (Indefinido)",
   "short_name": "Liquidador",
-  "description": "Calculadora de nómina médica por turnos y pacientes",
+  "description": "Calculadora de nómina médica para contratos a término indefinido en Colombia.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
-  "theme_color": "#10b981",
+  "theme_color": "#4f46e5",
   "icons": [
     {
       "src": "https://picsum.photos/seed/medical/192/192",
