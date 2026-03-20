@@ -238,6 +238,14 @@ const DEFAULT_RATES: Rates = {
 
 // --- Helper Functions ---
 
+const sortRecords = (records: ShiftRecord[]) => {
+  return [...records].sort((a, b) => {
+    const dateCompare = a.date.localeCompare(b.date);
+    if (dateCompare !== 0) return dateCompare;
+    return a.startTime.localeCompare(b.startTime);
+  });
+};
+
 const formatCurrency = (value: number) => {
   return new Intl.NumberFormat('es-CO', {
     style: 'currency',
@@ -335,11 +343,7 @@ function MainApp() {
     const recordsPath = `users/${user.uid}/records`;
     const unsubscribeRecords = onSnapshot(collection(db, recordsPath), (snapshot) => {
       const recordsData = snapshot.docs.map(doc => doc.data() as ShiftRecord);
-      setRecords(recordsData.sort((a, b) => {
-        const dateA = new Date(`${a.date}T${a.startTime}`).getTime();
-        const dateB = new Date(`${b.date}T${b.startTime}`).getTime();
-        return dateA - dateB;
-      }));
+      setRecords(sortRecords(recordsData));
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, recordsPath);
     });
@@ -581,7 +585,7 @@ function MainApp() {
     if (records.length > 0 && !confirm('¿Estás seguro? Se perderán los datos actuales no guardados.')) {
       return;
     }
-    setRecords(saved.records);
+    setRecords(sortRecords(saved.records));
     setRates(saved.rates);
     setAdditionalDeductions(Array.isArray(saved.additionalDeductions) ? saved.additionalDeductions : []);
     alert(`Extracto "${saved.name}" cargado.`);
