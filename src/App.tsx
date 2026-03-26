@@ -803,6 +803,7 @@ function MainApp() {
     const avaValues = { day: 0, night: 0, holidayDay: 0, holidayNight: 0 };
     const patientsBreakdown = { day: 0, night: 0, holidayDay: 0, holidayNight: 0 };
     const patientsValues = { day: 0, night: 0, holidayDay: 0, holidayNight: 0 };
+    const monthlyHours: { [key: string]: number } = {};
 
     // Determine target billing cycle from selectedPeriod
     const targetMonth = selectedPeriod.month;
@@ -868,7 +869,7 @@ function MainApp() {
     });
 
     filteredRecords.forEach(record => {
-      // Regular Hours (Carrito)
+      // Regular Hours (Consulta)
       hoursBreakdown.day += record.hours.day;
       hoursBreakdown.night += record.hours.night;
       hoursBreakdown.holidayDay += record.hours.holidayDay;
@@ -901,6 +902,12 @@ function MainApp() {
         (record.ava.night * rates.ava.night) +
         (record.ava.holidayDay * rates.ava.holidayDay) +
         (record.ava.holidayNight * rates.ava.holidayNight);
+
+      const rDate = new Date(record.date + 'T00:00:00');
+      const monthName = rDate.toLocaleString('es-ES', { month: 'long', year: 'numeric' });
+      const recordTotalHours = record.hours.day + record.hours.night + record.hours.holidayDay + record.hours.holidayNight +
+                               record.ava.day + record.ava.night + record.ava.holidayDay + record.ava.holidayNight;
+      monthlyHours[monthName] = (monthlyHours[monthName] || 0) + recordTotalHours;
 
       if (record.applyPatients) {
         patientsBreakdown.day += record.patients.day;
@@ -1026,7 +1033,8 @@ function MainApp() {
       patientsValues,
       totalMonthlyHours,
       totalMonthlyAVA,
-      totalMonthlyPatients
+      totalMonthlyPatients,
+      monthlyHours
     };
   }, [records, rates, additionalDeductions, viewingArchive, shift, quantities, editingId, user, selectedPeriod, useCustomRange, customRange]);
 
@@ -1185,8 +1193,8 @@ function MainApp() {
                   <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Valor de las Horas ($)</h3>
                   <div className="space-y-4">
                     {[
-                      { label: 'Diurna Ordinaria', key: 'day' },
-                      { label: 'Nocturna Ordinaria', key: 'night' },
+                      { label: 'Diurna Consulta', key: 'day' },
+                      { label: 'Nocturna Consulta', key: 'night' },
                       { label: 'Diurna Festiva', key: 'holidayDay' },
                       { label: 'Nocturna Festiva', key: 'holidayNight' },
                     ].map((item) => (
@@ -1932,7 +1940,7 @@ function MainApp() {
                     <tr className="bg-slate-50 border-b border-slate-200">
                       <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Fecha</th>
                       <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Horario</th>
-                      <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Horas Ord/Fest</th>
+                      <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Horas Consulta</th>
                       <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Horas AVA</th>
                       <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Pacientes</th>
                       <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Valor Turno (B/N)</th>
@@ -2140,7 +2148,7 @@ function MainApp() {
               <>
                 {/* Reporte de Cantidades */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  {/* Horas Carrito */}
+                  {/* Horas Consulta */}
                   <motion.div 
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -2148,7 +2156,7 @@ function MainApp() {
                   >
                     <div className="flex items-center gap-2 text-indigo-600 mb-4">
                       <Clock className="w-4 h-4" />
-                      <h3 className="text-xs font-bold uppercase tracking-widest">Reporte Horas Carrito</h3>
+                      <h3 className="text-xs font-bold uppercase tracking-widest">Reporte Horas Consulta</h3>
                     </div>
                     <div className="space-y-3">
                       <div className="flex justify-between items-center text-sm">
@@ -2168,7 +2176,7 @@ function MainApp() {
                         <span className="font-bold text-slate-700">{formatCurrency(results.hoursValues.holidayNight)}</span>
                       </div>
                       <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
-                        <span className="text-xs font-bold text-slate-400 uppercase">Total Carrito</span>
+                        <span className="text-xs font-bold text-slate-400 uppercase">Total Consulta</span>
                         <span className="text-lg font-black text-indigo-600 font-mono">{formatCurrency(results.totalH)}</span>
                       </div>
                     </div>
@@ -2244,6 +2252,78 @@ function MainApp() {
                     </div>
                   </motion.div>
                 </div>
+
+                {/* Resumen Consolidado del Periodo */}
+                <motion.div 
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  className="bg-slate-800 p-6 rounded-3xl border border-slate-700 shadow-xl text-white"
+                >
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="p-2 bg-slate-700 rounded-xl">
+                      <Calculator className="w-5 h-5 text-indigo-400" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Resumen Consolidado del Periodo</h3>
+                      <p className="text-[10px] text-slate-500 uppercase tracking-tighter">Totales acumulados para el intervalo seleccionado</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div className="space-y-6">
+                      <div className="flex items-end justify-between">
+                        <div>
+                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Total Pacientes Vistos</p>
+                          <p className="text-4xl font-black font-mono text-emerald-400">{results.totalMonthlyPatients}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Total Horas (Consulta + AVA)</p>
+                          <p className="text-4xl font-black font-mono text-indigo-400">{results.totalMonthlyHours + results.totalMonthlyAVA}h</p>
+                        </div>
+                      </div>
+                      
+                      <div className="pt-4 border-t border-slate-700">
+                        <div className="flex justify-between text-xs mb-2">
+                          <span className="text-slate-400">Horas Consulta:</span>
+                          <span className="font-bold text-indigo-300">{results.totalMonthlyHours}h</span>
+                        </div>
+                        <div className="flex justify-between text-xs">
+                          <span className="text-slate-400">Horas AVA:</span>
+                          <span className="font-bold text-violet-300">{results.totalMonthlyAVA}h</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-900/50 p-4 rounded-2xl border border-slate-700/50">
+                      <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+                        <Calendar className="w-3 h-3" />
+                        Discriminado de Horas por Mes
+                      </h4>
+                      <div className="space-y-3">
+                        {Object.entries(results.monthlyHours).length > 0 ? (
+                          Object.entries(results.monthlyHours).map(([month, hours]) => (
+                            <div key={month} className="flex justify-between items-center group">
+                              <span className="text-sm text-slate-400 capitalize group-hover:text-slate-200 transition-colors">{month}</span>
+                              <div className="flex items-center gap-3">
+                                <div className="h-1.5 w-24 bg-slate-800 rounded-full overflow-hidden">
+                                  <motion.div 
+                                    initial={{ width: 0 }}
+                                    animate={{ width: `${Math.min((hours / (results.totalMonthlyHours + results.totalMonthlyAVA)) * 100, 100)}%` }}
+                                    className="h-full bg-indigo-500"
+                                  />
+                                </div>
+                                <span className="text-sm font-bold font-mono text-indigo-400">{hours}h</span>
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="text-xs text-slate-600 italic">No hay datos mensuales disponibles.</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </motion.div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                   <motion.div 
