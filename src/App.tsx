@@ -382,6 +382,11 @@ function MainApp() {
     }
     return { month: now.getMonth(), year: now.getFullYear() };
   });
+  const [useCustomRange, setUseCustomRange] = useState(false);
+  const [customRange, setCustomRange] = useState({
+    start: '',
+    end: ''
+  });
 
   // Load saved calculations from localStorage on mount
   useEffect(() => {
@@ -399,6 +404,37 @@ function MainApp() {
   useEffect(() => {
     localStorage.setItem('med_payroll_saved', JSON.stringify(savedCalculations));
   }, [savedCalculations]);
+
+  // Initialize custom range with current billing cycle dates
+  useEffect(() => {
+    if (useCustomRange && !customRange.start && !customRange.end) {
+      const targetMonth = selectedPeriod.month;
+      const targetYear = selectedPeriod.year;
+      const cutoff = rates.payroll.billingCutoffDay;
+
+      let prevMonth = targetMonth - 1;
+      let prevYear = targetYear;
+      if (prevMonth < 0) {
+        prevMonth = 11;
+        prevYear--;
+      }
+      
+      const startDate = new Date(prevYear, prevMonth, cutoff + 1);
+      const endDate = new Date(targetYear, targetMonth, cutoff);
+
+      const toISODate = (date: Date) => {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+      };
+
+      setCustomRange({
+        start: toISODate(startDate),
+        end: toISODate(endDate)
+      });
+    }
+  }, [useCustomRange, selectedPeriod, rates.payroll.billingCutoffDay]);
 
   // --- Logic: Calculate Hours Distribution ---
   useEffect(() => {
@@ -773,6 +809,10 @@ function MainApp() {
     }
 
     const filteredRecords = viewingArchive ? recordsToCalculate : recordsToCalculate.filter(record => {
+      if (useCustomRange && customRange.start && customRange.end) {
+        return record.date >= customRange.start && record.date <= customRange.end;
+      }
+
       const rDate = new Date(record.date + 'T00:00:00');
       const rYear = rDate.getFullYear();
       const rMonth = rDate.getMonth();
@@ -932,7 +972,7 @@ function MainApp() {
       totalMonthlyHours,
       totalMonthlyPatients
     };
-  }, [records, rates, additionalDeductions, viewingArchive, shift, quantities, editingId, user, selectedPeriod]);
+  }, [records, rates, additionalDeductions, viewingArchive, shift, quantities, editingId, user, selectedPeriod, useCustomRange, customRange]);
 
   if (!isAuthReady) {
     return (
@@ -1723,27 +1763,62 @@ function MainApp() {
               </div>
 
               {!viewingArchive && (
-                <div className="flex items-center gap-2 bg-white p-1.5 rounded-2xl border border-slate-200 shadow-sm">
-                  <Calendar className="w-4 h-4 text-indigo-600 ml-2" />
-                  <select 
-                    value={selectedPeriod.month}
-                    onChange={(e) => setSelectedPeriod(prev => ({ ...prev, month: Number(e.target.value) }))}
-                    className="bg-transparent text-xs font-bold text-slate-700 outline-none cursor-pointer py-1 pr-2"
-                  >
-                    {['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'].map((m, i) => (
-                      <option key={i} value={i}>{m}</option>
-                    ))}
-                  </select>
-                  <div className="w-px h-4 bg-slate-200 mx-1" />
-                  <select 
-                    value={selectedPeriod.year}
-                    onChange={(e) => setSelectedPeriod(prev => ({ ...prev, year: Number(e.target.value) }))}
-                    className="bg-transparent text-xs font-bold text-slate-700 outline-none cursor-pointer py-1 pr-2"
-                  >
-                    {[2024, 2025, 2026, 2027].map(y => (
-                      <option key={y} value={y}>{y}</option>
-                    ))}
-                  </select>
+                <div className="flex flex-col sm:flex-row items-center gap-3">
+                  <div className="flex bg-slate-100 p-1 rounded-xl">
+                    <button
+                      onClick={() => setUseCustomRange(false)}
+                      className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all ${!useCustomRange ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                    >
+                      Ciclo Mensual
+                    </button>
+                    <button
+                      onClick={() => setUseCustomRange(true)}
+                      className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all ${useCustomRange ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                    >
+                      Rango Personalizado
+                    </button>
+                  </div>
+
+                  {useCustomRange ? (
+                    <div className="flex items-center gap-2 bg-white p-1.5 rounded-2xl border border-slate-200 shadow-sm">
+                      <input
+                        type="date"
+                        value={customRange.start}
+                        onChange={(e) => setCustomRange(prev => ({ ...prev, start: e.target.value }))}
+                        className="bg-transparent text-xs font-bold text-slate-700 outline-none cursor-pointer py-1 px-2"
+                      />
+                      <span className="text-slate-400 text-xs">al</span>
+                      <input
+                        type="date"
+                        value={customRange.end}
+                        onChange={(e) => setCustomRange(prev => ({ ...prev, end: e.target.value }))}
+                        className="bg-transparent text-xs font-bold text-slate-700 outline-none cursor-pointer py-1 px-2"
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 bg-white p-1.5 rounded-2xl border border-slate-200 shadow-sm">
+                      <Calendar className="w-4 h-4 text-indigo-600 ml-2" />
+                      <select 
+                        value={selectedPeriod.month}
+                        onChange={(e) => setSelectedPeriod(prev => ({ ...prev, month: Number(e.target.value) }))}
+                        className="bg-transparent text-xs font-bold text-slate-700 outline-none cursor-pointer py-1 pr-2"
+                      >
+                        {['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'].map((m, i) => (
+                          <option key={i} value={i}>{m}</option>
+                        ))}
+                      </select>
+                      <div className="w-px h-4 bg-slate-200 mx-1" />
+                      <select 
+                        value={selectedPeriod.year}
+                        onChange={(e) => setSelectedPeriod(prev => ({ ...prev, year: Number(e.target.value) }))}
+                        className="bg-transparent text-xs font-bold text-slate-700 outline-none cursor-pointer py-1 pr-2"
+                      >
+                        {[2024, 2025, 2026, 2027].map(y => (
+                          <option key={y} value={y}>{y}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
