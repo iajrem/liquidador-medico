@@ -2033,6 +2033,22 @@ function MainApp() {
                       )}
                     </AnimatePresence>
                   </tbody>
+                  {(viewingArchive ? viewingArchive.records : records).length > 0 && (
+                    <tfoot className="bg-slate-50 border-t-2 border-slate-200">
+                      <tr>
+                        <td colSpan={5} className="p-4 text-right text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                          Totales del Periodo:
+                        </td>
+                        <td className="p-4 text-xs font-mono font-black text-emerald-600">
+                          {results.totalMonthlyPatients} Pac.
+                        </td>
+                        <td className="p-4 text-xs font-mono font-black text-indigo-600">
+                          ${Math.round(results.gross).toLocaleString()}
+                        </td>
+                        <td colSpan={2}></td>
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
             </div>
