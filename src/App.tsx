@@ -26,6 +26,7 @@ import {
   FileText,
   Plus,
   X,
+  Calendar,
   LogIn,
   LogOut,
   ExternalLink,
@@ -372,6 +373,15 @@ function MainApp() {
   const [autoCalculatePatients, setAutoCalculatePatients] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [viewingArchive, setViewingArchive] = useState<SavedCalculation | null>(null);
+  const [selectedPeriod, setSelectedPeriod] = useState(() => {
+    const now = new Date();
+    // If today is after cutoff, default to next month's cycle
+    if (now.getDate() > DEFAULT_RATES.payroll.billingCutoffDay) {
+      const next = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      return { month: next.getMonth(), year: next.getFullYear() };
+    }
+    return { month: now.getMonth(), year: now.getFullYear() };
+  });
 
   // Load saved calculations from localStorage on mount
   useEffect(() => {
@@ -734,10 +744,9 @@ function MainApp() {
     const hoursBreakdown = { day: 0, night: 0, holidayDay: 0, holidayNight: 0 };
     const patientsBreakdown = { day: 0, night: 0, holidayDay: 0, holidayNight: 0 };
 
-    // Determine current billing cycle
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth();
+    // Determine target billing cycle from selectedPeriod
+    const targetMonth = selectedPeriod.month;
+    const targetYear = selectedPeriod.year;
     const cutoff = rates.payroll.billingCutoffDay;
 
     // Determine which records to use: Archive or Live
@@ -769,23 +778,26 @@ function MainApp() {
       const rMonth = rDate.getMonth();
       const rDay = rDate.getDate();
 
-      // Determine the target billing month (the one that contains "now")
-      let targetMonth = currentMonth;
-      let targetYear = currentYear;
-      if (now.getDate() > cutoff) {
-        targetMonth++;
-        if (targetMonth > 11) {
-          targetMonth = 0;
-          targetYear++;
-        }
-      }
-
       // A record belongs to the target cycle if:
       // (rMonth == targetMonth && rDay <= cutoff) OR (rMonth == targetMonth - 1 && rDay > cutoff)
       const isSameMonth = rMonth === targetMonth && rYear === targetYear;
-      const prevMonth = targetMonth === 0 ? 11 : targetMonth - 1;
-      const prevYear = targetMonth === 0 ? targetYear - 1 : targetYear;
+      
+      // Handle previous month correctly even for January (month 0)
+      let prevMonth = targetMonth - 1;
+      let prevYear = targetYear;
+      if (prevMonth < 0) {
+        prevMonth = 11;
+        prevYear--;
+      }
+      
       const isPrevMonth = rMonth === prevMonth && rYear === prevYear;
+      
+      // Special handling for February or months shorter than cutoff
+      // If the previous month is shorter than cutoff, we should include its last days
+      // But the logic "rDay > cutoff" is strict. 
+      // If cutoff is 29 and Feb has 28 days, Feb 28 is NOT > 29.
+      // So Feb 28 belongs to the February cycle (rMonth == 1 && rDay <= 29).
+      // This is correct.
       
       return (isSameMonth && rDay <= cutoff) || (isPrevMonth && rDay > cutoff);
     });
@@ -920,7 +932,7 @@ function MainApp() {
       totalMonthlyHours,
       totalMonthlyPatients
     };
-  }, [records, rates, additionalDeductions, viewingArchive, shift, quantities, editingId, user]);
+  }, [records, rates, additionalDeductions, viewingArchive, shift, quantities, editingId, user, selectedPeriod]);
 
   if (!isAuthReady) {
     return (
@@ -1702,11 +1714,38 @@ function MainApp() {
 
           {/* Step 3: Log (Bitácora) */}
           <section className="space-y-6">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-sm">3</div>
-              <h2 className="text-xl font-bold text-slate-800">
-                {viewingArchive ? `Extracto: ${viewingArchive.name}` : 'Bitácora de Turnos (Acumulado)'}
-              </h2>
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-sm">3</div>
+                <h2 className="text-xl font-bold text-slate-800">
+                  {viewingArchive ? `Extracto: ${viewingArchive.name}` : 'Bitácora de Turnos'}
+                </h2>
+              </div>
+
+              {!viewingArchive && (
+                <div className="flex items-center gap-2 bg-white p-1.5 rounded-2xl border border-slate-200 shadow-sm">
+                  <Calendar className="w-4 h-4 text-indigo-600 ml-2" />
+                  <select 
+                    value={selectedPeriod.month}
+                    onChange={(e) => setSelectedPeriod(prev => ({ ...prev, month: Number(e.target.value) }))}
+                    className="bg-transparent text-xs font-bold text-slate-700 outline-none cursor-pointer py-1 pr-2"
+                  >
+                    {['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'].map((m, i) => (
+                      <option key={i} value={i}>{m}</option>
+                    ))}
+                  </select>
+                  <div className="w-px h-4 bg-slate-200 mx-1" />
+                  <select 
+                    value={selectedPeriod.year}
+                    onChange={(e) => setSelectedPeriod(prev => ({ ...prev, year: Number(e.target.value) }))}
+                    className="bg-transparent text-xs font-bold text-slate-700 outline-none cursor-pointer py-1 pr-2"
+                  >
+                    {[2024, 2025, 2026, 2027].map(y => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
 
             <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
