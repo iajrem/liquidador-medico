@@ -20,6 +20,7 @@
       "properties": {
         "id": { "type": "string" },
         "userId": { "type": "string" },
+        "periodId": { "type": "string" },
         "date": { "type": "string" },
         "startTime": { "type": "string" },
         "endTime": { "type": "string" },
@@ -63,11 +64,27 @@
       "properties": {
         "id": { "type": "string" },
         "userId": { "type": "string" },
+        "periodId": { "type": "string" },
         "label": { "type": "string" },
         "amount": { "type": "number" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "userId", "label", "amount"]
+    },
+    "BillingPeriod": {
+      "title": "Billing Period",
+      "description": "A defined billing cycle with start and end dates",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "archived"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "startDate", "endDate", "status"]
     }
   },
   "firestore": {
@@ -82,6 +99,10 @@
     "/users/{userId}/deductions/{deductionId}": {
       "schema": "Deduction",
       "description": "Custom deductions for a specific user"
+    },
+    "/users/{userId}/periods/{periodId}": {
+      "schema": "BillingPeriod",
+      "description": "Billing periods for a specific user"
     }
   }
 }

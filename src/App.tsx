@@ -32,7 +32,13 @@ import {
   LogOut,
   ExternalLink,
   User as UserIcon,
-  CheckCircle2 as CheckIcon
+  CheckCircle2 as CheckIcon,
+  Archive,
+  Printer,
+  PlusCircle,
+  MinusCircle,
+  History,
+  Download
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -119,6 +125,17 @@ interface Deduction {
   id: string;
   concept: string;
   amount: number;
+  periodId?: string;
+}
+
+interface BillingPeriod {
+  id: string;
+  userId: string;
+  name: string;
+  startDate: string;
+  endDate: string;
+  status: 'active' | 'archived';
+  createdAt: string;
 }
 
 interface SavedCalculation {
@@ -196,6 +213,7 @@ interface Quantities {
 interface ShiftRecord {
   id: string;
   userId: string;
+  periodId?: string;
   date: string;
   startTime: string;
   endTime: string;
@@ -294,6 +312,15 @@ function MainApp() {
   });
   const [records, setRecords] = useState<ShiftRecord[]>([]);
   const [additionalDeductions, setAdditionalDeductions] = useState<Deduction[]>([]);
+  const [periods, setPeriods] = useState<BillingPeriod[]>([]);
+  const [activePeriod, setActivePeriod] = useState<BillingPeriod | null>(null);
+  const [selectedPeriodId, setSelectedPeriodId] = useState<string | null>(null);
+  const [showPeriodModal, setShowPeriodModal] = useState(false);
+  const [newPeriodData, setNewPeriodData] = useState({
+    name: '',
+    startDate: '',
+    endDate: ''
+  });
 
   // --- Auth Effect ---
   useEffect(() => {
@@ -343,12 +370,51 @@ function MainApp() {
     if (!isAuthReady || !user) {
       setRecords([]);
       setAdditionalDeductions([]);
+      setPeriods([]);
+      setActivePeriod(null);
+      setSelectedPeriodId(null);
+      return;
+    }
+
+    // Sync Periods
+    const periodsPath = `users/${user.uid}/periods`;
+    const unsubscribePeriods = onSnapshot(collection(db, periodsPath), (snapshot) => {
+      const periodsData = snapshot.docs.map(doc => doc.data() as BillingPeriod);
+      const sortedPeriods = periodsData.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      setPeriods(sortedPeriods);
+      
+      const active = sortedPeriods.find(p => p.status === 'active');
+      setActivePeriod(active || null);
+      
+      // If no period is selected, default to the active one or the latest archived one
+      if (!selectedPeriodId) {
+        if (active) {
+          setSelectedPeriodId(active.id);
+        } else if (sortedPeriods.length > 0) {
+          setSelectedPeriodId(sortedPeriods[0].id);
+        }
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, periodsPath);
+    });
+
+    return () => {
+      unsubscribePeriods();
+    };
+  }, [isAuthReady, user]);
+
+  useEffect(() => {
+    if (!isAuthReady || !user || !selectedPeriodId) {
+      setRecords([]);
+      setAdditionalDeductions([]);
       return;
     }
 
     const recordsPath = `users/${user.uid}/records`;
     const unsubscribeRecords = onSnapshot(collection(db, recordsPath), (snapshot) => {
-      const recordsData = snapshot.docs.map(doc => doc.data() as ShiftRecord);
+      const recordsData = snapshot.docs
+        .map(doc => doc.data() as ShiftRecord)
+        .filter(r => r.periodId === selectedPeriodId);
       setRecords(sortRecords(recordsData));
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, recordsPath);
@@ -356,7 +422,9 @@ function MainApp() {
 
     const deductionsPath = `users/${user.uid}/deductions`;
     const unsubscribeDeductions = onSnapshot(collection(db, deductionsPath), (snapshot) => {
-      const deductionsData = snapshot.docs.map(doc => doc.data() as Deduction);
+      const deductionsData = snapshot.docs
+        .map(doc => doc.data() as Deduction)
+        .filter(d => d.periodId === selectedPeriodId);
       setAdditionalDeductions(deductionsData);
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, deductionsPath);
@@ -366,7 +434,7 @@ function MainApp() {
       unsubscribeRecords();
       unsubscribeDeductions();
     };
-  }, [isAuthReady, user]);
+  }, [isAuthReady, user, selectedPeriodId]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [showDetails, setShowDetails] = useState(false);
   const [savedCalculations, setSavedCalculations] = useState<SavedCalculation[]>([]);
@@ -374,20 +442,6 @@ function MainApp() {
   const [autoCalculatePatients, setAutoCalculatePatients] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [viewingArchive, setViewingArchive] = useState<SavedCalculation | null>(null);
-  const [selectedPeriod, setSelectedPeriod] = useState(() => {
-    const now = new Date();
-    // If today is after cutoff, default to next month's cycle
-    if (now.getDate() > DEFAULT_RATES.payroll.billingCutoffDay) {
-      const next = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-      return { month: next.getMonth(), year: next.getFullYear() };
-    }
-    return { month: now.getMonth(), year: now.getFullYear() };
-  });
-  const [useCustomRange, setUseCustomRange] = useState(false);
-  const [customRange, setCustomRange] = useState({
-    start: '',
-    end: ''
-  });
 
   // Load saved calculations from localStorage on mount
   useEffect(() => {
@@ -405,43 +459,6 @@ function MainApp() {
   useEffect(() => {
     localStorage.setItem('med_payroll_saved', JSON.stringify(savedCalculations));
   }, [savedCalculations]);
-
-  // Initialize custom range with current billing cycle dates
-  useEffect(() => {
-    if (useCustomRange && !customRange.start && !customRange.end) {
-      const targetMonth = selectedPeriod.month;
-      const targetYear = selectedPeriod.year;
-      const cutoff = rates.payroll.billingCutoffDay;
-
-      let prevMonth = targetMonth - 1;
-      let prevYear = targetYear;
-      if (prevMonth < 0) {
-        prevMonth = 11;
-        prevYear--;
-      }
-      
-      let startDate;
-      if (targetMonth === 2) { // March
-        startDate = new Date(targetYear, 1, 28); // Feb 28
-      } else {
-        startDate = new Date(prevYear, prevMonth, cutoff + 1);
-      }
-      
-      const endDate = new Date(targetYear, targetMonth, cutoff);
-
-      const toISODate = (date: Date) => {
-        const y = date.getFullYear();
-        const m = String(date.getMonth() + 1).padStart(2, '0');
-        const d = String(date.getDate()).padStart(2, '0');
-        return `${y}-${m}-${d}`;
-      };
-
-      setCustomRange({
-        start: toISODate(startDate),
-        end: toISODate(endDate)
-      });
-    }
-  }, [useCustomRange, selectedPeriod, rates.payroll.billingCutoffDay]);
 
   // --- Logic: Calculate Hours Distribution ---
   const calculateShiftDistribution = (s: { startTime: string, endTime: string, isHolidayStart: boolean, isHolidayEnd: boolean }, r: typeof rates) => {
@@ -500,13 +517,53 @@ function MainApp() {
   }, [shift.startTime, shift.endTime, shift.isHolidayStart, shift.isHolidayEnd, shift.isAVAShift, autoCalculatePatients, rates.payroll.nightShiftStart]);
 
   // --- Actions ---
+  const startNewPeriod = async () => {
+    if (!user) return;
+    if (!newPeriodData.startDate || !newPeriodData.endDate) {
+      alert('Por favor, ingresa las fechas de inicio y fin.');
+      return;
+    }
+
+    const periodId = crypto.randomUUID();
+    const newPeriod: BillingPeriod = {
+      id: periodId,
+      userId: user.uid,
+      name: newPeriodData.name || `Periodo ${newPeriodData.startDate} - ${newPeriodData.endDate}`,
+      startDate: newPeriodData.startDate,
+      endDate: newPeriodData.endDate,
+      status: 'active',
+      createdAt: new Date().toISOString()
+    };
+
+    const path = `users/${user.uid}/periods/${periodId}`;
+    try {
+      // If there's an active period, archive it first
+      if (activePeriod) {
+        await updateDoc(doc(db, `users/${user.uid}/periods/${activePeriod.id}`), { status: 'archived' });
+      }
+      
+      await setDoc(doc(db, path), newPeriod);
+      setSelectedPeriodId(periodId);
+      setShowPeriodModal(false);
+      setNewPeriodData({ name: '', startDate: '', endDate: '' });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, path);
+    }
+  };
+
   const addRecord = async () => {
     if (!user) return;
+    if (!selectedPeriodId) {
+      alert('Por favor, inicia un periodo de facturación primero.');
+      setShowPeriodModal(true);
+      return;
+    }
 
     const recordId = editingId || crypto.randomUUID();
     const newRecord: ShiftRecord = {
       id: recordId,
       userId: user.uid,
+      periodId: selectedPeriodId,
       date: shift.date,
       startTime: shift.startTime,
       endTime: shift.endTime,
@@ -762,12 +819,13 @@ function MainApp() {
   };
 
   const addDeduction = async () => {
-    if (!user) return;
+    if (!user || !selectedPeriodId) return;
     const deductionId = crypto.randomUUID();
     const deduction: Deduction = {
       id: deductionId,
       concept: '',
-      amount: 0
+      amount: 0,
+      periodId: selectedPeriodId
     };
     const path = `users/${user.uid}/deductions/${deductionId}`;
     try {
@@ -811,11 +869,6 @@ function MainApp() {
     const patientsValues = { day: 0, night: 0, holidayDay: 0, holidayNight: 0 };
     const monthlyHours: { [key: string]: number } = {};
 
-    // Determine target billing cycle from selectedPeriod
-    const targetMonth = selectedPeriod.month;
-    const targetYear = selectedPeriod.year;
-    const cutoff = rates.payroll.billingCutoffDay;
-
     // Determine which records to use: Archive or Live
     const baseRecords = viewingArchive ? viewingArchive.records : records;
 
@@ -825,6 +878,7 @@ function MainApp() {
       const currentFormRecord: ShiftRecord = {
         id: editingId,
         userId: user?.uid || '',
+        periodId: selectedPeriodId || undefined,
         date: shift.date,
         startTime: shift.startTime,
         endTime: shift.endTime,
@@ -839,45 +893,7 @@ function MainApp() {
       recordsToCalculate = recordsToCalculate.map(r => r.id === editingId ? currentFormRecord : r);
     }
 
-    const filteredRecords = viewingArchive ? recordsToCalculate : recordsToCalculate.filter(record => {
-      if (useCustomRange) {
-        if (!customRange.start || !customRange.end) return true; // If range is incomplete, show all (or maybe none? let's show all for now)
-        return record.date >= customRange.start && record.date <= customRange.end;
-      }
-
-      const rDate = new Date(record.date + 'T00:00:00');
-      const rYear = rDate.getFullYear();
-      const rMonth = rDate.getMonth();
-      const rDay = rDate.getDate();
-
-      // A record belongs to the target cycle if:
-      // (rMonth == targetMonth && rDay <= cutoff) OR (rMonth == targetMonth - 1 && rDay > cutoff)
-      // Special case for March cycle: starts Feb 28
-      if (targetMonth === 2) {
-        return (rMonth === 2 && rDay <= cutoff) || (rMonth === 1 && rDay >= 28);
-      }
-
-      const isSameMonth = rMonth === targetMonth && rYear === targetYear;
-      
-      // Handle previous month correctly even for January (month 0)
-      let prevMonth = targetMonth - 1;
-      let prevYear = targetYear;
-      if (prevMonth < 0) {
-        prevMonth = 11;
-        prevYear--;
-      }
-      
-      const isPrevMonth = rMonth === prevMonth && rYear === prevYear;
-      
-      // Special handling for February or months shorter than cutoff
-      // If the previous month is shorter than cutoff, we should include its last days
-      // But the logic "rDay > cutoff" is strict. 
-      // If cutoff is 29 and Feb has 28 days, Feb 28 is NOT > 29.
-      // So Feb 28 belongs to the February cycle (rMonth == 1 && rDay <= 29).
-      // This is correct.
-      
-      return (isSameMonth && rDay <= cutoff) || (isPrevMonth && rDay > cutoff);
-    });
+    const filteredRecords = recordsToCalculate;
 
     filteredRecords.forEach(record => {
       // Regular Hours (Consulta)
@@ -1047,7 +1063,7 @@ function MainApp() {
       totalMonthlyPatients,
       monthlyHours
     };
-  }, [records, rates, additionalDeductions, viewingArchive, shift, quantities, editingId, user, selectedPeriod, useCustomRange, customRange]);
+  }, [records, rates, additionalDeductions, viewingArchive, shift, quantities, editingId, user, selectedPeriodId]);
 
   if (!isAuthReady) {
     return (
@@ -1192,6 +1208,67 @@ function MainApp() {
           lg:sticky lg:top-[73px] lg:h-[calc(100vh-73px)] overflow-y-auto
         `}>
           <div className="p-6 space-y-8">
+            {/* Period Selector */}
+            <section className="bg-indigo-50 p-4 rounded-2xl border border-indigo-100">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2 text-indigo-700">
+                  <Calendar className="w-4 h-4" />
+                  <h2 className="text-xs font-bold uppercase tracking-widest">Periodos</h2>
+                </div>
+                <button 
+                  onClick={() => setShowPeriodModal(true)}
+                  className="p-1.5 bg-white text-indigo-600 rounded-lg hover:bg-indigo-100 transition-colors shadow-sm"
+                  title="Nuevo Periodo"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-indigo-400 uppercase ml-1">Periodo Activo</label>
+                  {activePeriod ? (
+                    <div 
+                      onClick={() => setSelectedPeriodId(activePeriod.id)}
+                      className={`p-3 rounded-xl border cursor-pointer transition-all ${selectedPeriodId === activePeriod.id ? 'bg-white border-indigo-300 shadow-sm' : 'bg-indigo-100/50 border-transparent hover:bg-white'}`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold text-slate-700">{activePeriod.name}</span>
+                        <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      </div>
+                      <div className="text-[9px] text-slate-500 font-medium">{activePeriod.startDate} al {activePeriod.endDate}</div>
+                    </div>
+                  ) : (
+                    <button 
+                      onClick={() => setShowPeriodModal(true)}
+                      className="w-full py-3 bg-white border border-dashed border-indigo-200 text-indigo-600 text-xs font-bold rounded-xl hover:bg-indigo-100 transition-all flex items-center justify-center gap-2"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Iniciar Periodo
+                    </button>
+                  )}
+                </div>
+
+                {periods.filter(p => p.status === 'archived').length > 0 && (
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1">Historial</label>
+                    <select 
+                      value={selectedPeriodId && periods.find(p => p.id === selectedPeriodId)?.status === 'archived' ? selectedPeriodId : ''}
+                      onChange={(e) => setSelectedPeriodId(e.target.value)}
+                      className="w-full bg-white border border-indigo-200 rounded-xl py-2 px-3 text-xs font-bold text-slate-700 focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                    >
+                      <option value="" disabled>Ver historial...</option>
+                      {periods.filter(p => p.status === 'archived').map(p => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+            </section>
+
             <section>
               <div className="flex items-center gap-2 mb-4 text-indigo-600">
                 <Settings className="w-4 h-4" />
@@ -1578,85 +1655,54 @@ function MainApp() {
               <h2 className="text-xl font-bold text-slate-800">Periodo y Registro de Turnos</h2>
             </div>
 
-            {/* Period Selection */}
-            {!viewingArchive && (
-              <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-4">
-                <div className="flex items-center gap-2 text-indigo-600 mb-2">
-                  <Calendar className="w-5 h-5" />
-                  <h3 className="text-sm font-bold uppercase tracking-wider">Definir Periodo de Facturación</h3>
-                </div>
-                
-                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
-                  <div className="flex bg-slate-100 p-1 rounded-xl w-full sm:w-auto">
-                    <button
-                      onClick={() => setUseCustomRange(false)}
-                      className={`flex-1 sm:flex-none px-4 py-2 text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all ${!useCustomRange ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                    >
-                      Ciclo Mensual
-                    </button>
-                    <button
-                      onClick={() => setUseCustomRange(true)}
-                      className={`flex-1 sm:flex-none px-4 py-2 text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all ${useCustomRange ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                    >
-                      Rango Libre
-                    </button>
+            {/* Period Status Banner */}
+            {selectedPeriodId && (
+              <div className={`p-6 rounded-3xl border shadow-sm flex flex-col md:flex-row items-center justify-between gap-4 ${
+                periods.find(p => p.id === selectedPeriodId)?.status === 'active' 
+                  ? 'bg-white border-slate-200' 
+                  : 'bg-amber-50 border-amber-200'
+              }`}>
+                <div className="flex items-center gap-4">
+                  <div className={`p-3 rounded-2xl ${
+                    periods.find(p => p.id === selectedPeriodId)?.status === 'active' 
+                      ? 'bg-indigo-100 text-indigo-600' 
+                      : 'bg-amber-100 text-amber-600'
+                  }`}>
+                    <Calendar className="w-6 h-6" />
                   </div>
-
-                  {useCustomRange ? (
-                    <div className="flex items-center gap-3 bg-slate-50 p-2 rounded-2xl border border-slate-200 w-full sm:w-auto">
-                      <div className="flex flex-col px-2">
-                        <span className="text-[8px] font-bold text-slate-400 uppercase">Desde</span>
-                        <input
-                          type="date"
-                          value={customRange.start}
-                          onChange={(e) => setCustomRange(prev => ({ ...prev, start: e.target.value }))}
-                          className="bg-transparent text-xs font-bold text-slate-700 outline-none cursor-pointer"
-                        />
-                      </div>
-                      <div className="w-px h-6 bg-slate-200" />
-                      <div className="flex flex-col px-2">
-                        <span className="text-[8px] font-bold text-slate-400 uppercase">Hasta</span>
-                        <input
-                          type="date"
-                          value={customRange.end}
-                          onChange={(e) => setCustomRange(prev => ({ ...prev, end: e.target.value }))}
-                          className="bg-transparent text-xs font-bold text-slate-700 outline-none cursor-pointer"
-                        />
-                      </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-lg font-bold text-slate-800">
+                        {periods.find(p => p.id === selectedPeriodId)?.name}
+                      </h3>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                        periods.find(p => p.id === selectedPeriodId)?.status === 'active' 
+                          ? 'bg-emerald-100 text-emerald-700' 
+                          : 'bg-amber-200 text-amber-800'
+                      }`}>
+                        {periods.find(p => p.id === selectedPeriodId)?.status === 'active' ? 'Activo' : 'Archivado'}
+                      </span>
                     </div>
-                  ) : (
-                    <div className="flex items-center gap-3 bg-slate-50 p-2 rounded-2xl border border-slate-200 w-full sm:w-auto">
-                      <div className="flex flex-col px-2">
-                        <span className="text-[8px] font-bold text-slate-400 uppercase">Mes de Facturación</span>
-                        <select 
-                          value={selectedPeriod.month}
-                          onChange={(e) => setSelectedPeriod(prev => ({ ...prev, month: Number(e.target.value) }))}
-                          className="bg-transparent text-xs font-bold text-slate-700 outline-none cursor-pointer"
-                        >
-                          {['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'].map((m, i) => (
-                            <option key={i} value={i}>{m}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="w-px h-6 bg-slate-200" />
-                      <div className="flex flex-col px-2">
-                        <span className="text-[8px] font-bold text-slate-400 uppercase">Año</span>
-                        <select 
-                          value={selectedPeriod.year}
-                          onChange={(e) => setSelectedPeriod(prev => ({ ...prev, year: Number(e.target.value) }))}
-                          className="bg-transparent text-xs font-bold text-slate-700 outline-none cursor-pointer"
-                        >
-                          {[2024, 2025, 2026, 2027].map(y => (
-                            <option key={y} value={y}>{y}</option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-                  )}
+                    <p className="text-sm text-slate-500">
+                      Rango: <span className="font-bold">{periods.find(p => p.id === selectedPeriodId)?.startDate}</span> al <span className="font-bold">{periods.find(p => p.id === selectedPeriodId)?.endDate}</span>
+                    </p>
+                  </div>
                 </div>
-                <p className="text-[10px] text-slate-400 italic">
-                  * Solo los turnos dentro de este periodo se incluirán en el cálculo del extracto final.
-                </p>
+
+                {periods.find(p => p.id === selectedPeriodId)?.status === 'active' ? (
+                  <button 
+                    onClick={() => setShowPeriodModal(true)}
+                    className="px-5 py-2.5 bg-slate-800 text-white text-xs font-bold rounded-xl hover:bg-slate-700 transition-all flex items-center gap-2 shadow-md"
+                  >
+                    <Archive className="w-4 h-4" />
+                    Cerrar y Nuevo Periodo
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-3 bg-white/50 p-3 rounded-2xl border border-amber-200/50">
+                    <Info className="w-4 h-4 text-amber-600" />
+                    <p className="text-xs text-amber-800 font-medium">Este periodo está archivado. Los cambios se guardarán pero no afectarán el registro activo.</p>
+                  </div>
+                )}
               </div>
             )}
             
@@ -2148,364 +2194,186 @@ function MainApp() {
             </section>
           )}
 
-          {/* Step 4: Results */}
+          {/* Step 4: Final Extract */}
           <section className="space-y-6">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-sm">4</div>
-              <h2 className="text-xl font-bold text-slate-800">Extracto Final</h2>
+              <h2 className="text-xl font-bold text-slate-800">Extracto Final de Pago</h2>
             </div>
-
+            
             {(viewingArchive ? viewingArchive.records : records).length > 0 ? (
-              <>
-                {/* Reporte de Cantidades */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  {/* Horas Consulta */}
-                  <motion.div 
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm"
-                  >
-                    <div className="flex items-center gap-2 text-indigo-600 mb-4">
-                      <Clock className="w-4 h-4" />
-                      <h3 className="text-xs font-bold uppercase tracking-widest">Reporte Horas Consulta</h3>
-                    </div>
-                    <div className="space-y-3">
-                      <div className="flex justify-between items-center text-sm">
-                        <span className="text-slate-500">Diurnas ({results.hoursBreakdown.day}h)</span>
-                        <span className="font-bold text-slate-700">{formatCurrency(results.hoursValues.day)}</span>
-                      </div>
-                      <div className="flex justify-between items-center text-sm">
-                        <span className="text-slate-500">Nocturnas ({results.hoursBreakdown.night}h)</span>
-                        <span className="font-bold text-slate-700">{formatCurrency(results.hoursValues.night)}</span>
-                      </div>
-                      <div className="flex justify-between items-center text-sm">
-                        <span className="text-slate-500">Fest. Diurnas ({results.hoursBreakdown.holidayDay}h)</span>
-                        <span className="font-bold text-slate-700">{formatCurrency(results.hoursValues.holidayDay)}</span>
-                      </div>
-                      <div className="flex justify-between items-center text-sm">
-                        <span className="text-slate-500">Fest. Noct. ({results.hoursBreakdown.holidayNight}h)</span>
-                        <span className="font-bold text-slate-700">{formatCurrency(results.hoursValues.holidayNight)}</span>
-                      </div>
-                      <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
-                        <span className="text-xs font-bold text-slate-400 uppercase">Total Consulta</span>
-                        <span className="text-lg font-black text-indigo-600 font-mono">{formatCurrency(results.totalH)}</span>
-                      </div>
-                    </div>
-                  </motion.div>
-
-                  {/* Horas AVA */}
-                  <motion.div 
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.1 }}
-                    className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm"
-                  >
-                    <div className="flex items-center gap-2 text-violet-600 mb-4">
-                      <Clock className="w-4 h-4" />
-                      <h3 className="text-xs font-bold uppercase tracking-widest">Reporte Horas AVA</h3>
-                    </div>
-                    <div className="space-y-3">
-                      <div className="flex justify-between items-center text-sm">
-                        <span className="text-slate-500">Diurnas ({results.avaBreakdown.day}h)</span>
-                        <span className="font-bold text-slate-700">{formatCurrency(results.avaValues.day)}</span>
-                      </div>
-                      <div className="flex justify-between items-center text-sm">
-                        <span className="text-slate-500">Nocturnas ({results.avaBreakdown.night}h)</span>
-                        <span className="font-bold text-slate-700">{formatCurrency(results.avaValues.night)}</span>
-                      </div>
-                      <div className="flex justify-between items-center text-sm">
-                        <span className="text-slate-500">Fest. Diurnas ({results.avaBreakdown.holidayDay}h)</span>
-                        <span className="font-bold text-slate-700">{formatCurrency(results.avaValues.holidayDay)}</span>
-                      </div>
-                      <div className="flex justify-between items-center text-sm">
-                        <span className="text-slate-500">Fest. Noct. ({results.avaBreakdown.holidayNight}h)</span>
-                        <span className="font-bold text-slate-700">{formatCurrency(results.avaValues.holidayNight)}</span>
-                      </div>
-                      <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
-                        <span className="text-xs font-bold text-slate-400 uppercase">Total AVA</span>
-                        <span className="text-lg font-black text-violet-600 font-mono">{formatCurrency(results.totalAVA)}</span>
-                      </div>
-                    </div>
-                  </motion.div>
-
-                  {/* Reporte de Pacientes */}
-                  <motion.div 
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.2 }}
-                    className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm"
-                  >
-                    <div className="flex items-center gap-2 text-emerald-600 mb-4">
-                      <Users className="w-4 h-4" />
-                      <h3 className="text-xs font-bold uppercase tracking-widest">Reporte de Pacientes</h3>
-                    </div>
-                    <div className="space-y-3">
-                      <div className="flex justify-between items-center text-sm">
-                        <span className="text-slate-500">Diurnos ({results.patientsBreakdown.day})</span>
-                        <span className="font-bold text-slate-700">{formatCurrency(results.patientsValues.day)}</span>
-                      </div>
-                      <div className="flex justify-between items-center text-sm">
-                        <span className="text-slate-500">Nocturnos ({results.patientsBreakdown.night})</span>
-                        <span className="font-bold text-slate-700">{formatCurrency(results.patientsValues.night)}</span>
-                      </div>
-                      <div className="flex justify-between items-center text-sm">
-                        <span className="text-slate-500">Fest. Diurnos ({results.patientsBreakdown.holidayDay})</span>
-                        <span className="font-bold text-slate-700">{formatCurrency(results.patientsValues.holidayDay)}</span>
-                      </div>
-                      <div className="flex justify-between items-center text-sm">
-                        <span className="text-slate-500">Fest. Noct. ({results.patientsBreakdown.holidayNight})</span>
-                        <span className="font-bold text-slate-700">{formatCurrency(results.patientsValues.holidayNight)}</span>
-                      </div>
-                      <div className="pt-3 border-t border-slate-100 flex justify-between items-center">
-                        <span className="text-xs font-bold text-slate-400 uppercase">Total Pacientes</span>
-                        <span className="text-lg font-black text-emerald-600 font-mono">{formatCurrency(results.totalP)}</span>
-                      </div>
-                    </div>
-                  </motion.div>
+              <div className="bg-white p-6 lg:p-10 rounded-3xl border border-slate-200 shadow-sm space-y-10">
+                {/* Summary Header */}
+                <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+                  <div className="space-y-1">
+                    <h3 className="text-2xl font-bold text-slate-800">
+                      {periods.find(p => p.id === selectedPeriodId)?.name || 'Extracto de Pago'}
+                    </h3>
+                    <p className="text-slate-500 font-medium">Resumen detallado de ingresos y deducciones legales.</p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button 
+                      onClick={() => window.print()}
+                      className="p-3 bg-slate-100 text-slate-600 rounded-2xl hover:bg-slate-200 transition-all"
+                      title="Imprimir Extracto"
+                    >
+                      <Printer className="w-5 h-5" />
+                    </button>
+                    <button 
+                      onClick={saveCurrentCalculation}
+                      className="px-6 py-3 bg-indigo-600 text-white font-bold rounded-2xl hover:bg-indigo-700 transition-all flex items-center gap-2 shadow-lg shadow-indigo-200"
+                    >
+                      <Save className="w-5 h-5" />
+                      Guardar Extracto
+                    </button>
+                  </div>
                 </div>
 
-                {/* Resumen Consolidado del Periodo */}
-                <motion.div 
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.3 }}
-                  className="bg-slate-800 p-6 rounded-3xl border border-slate-700 shadow-xl text-white"
-                >
-                  <div className="flex items-center gap-3 mb-6">
-                    <div className="p-2 bg-slate-700 rounded-xl">
-                      <Calculator className="w-5 h-5 text-indigo-400" />
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Resumen Consolidado del Periodo</h3>
-                      <p className="text-[10px] text-slate-500 uppercase tracking-tighter">Totales acumulados para el intervalo seleccionado</p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <div className="space-y-6">
-                      <div className="flex items-end justify-between">
-                        <div>
-                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Total Pacientes Vistos</p>
-                          <p className="text-4xl font-black font-mono text-emerald-400">{results.totalMonthlyPatients}</p>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Total Horas (Consulta + AVA)</p>
-                          <p className="text-4xl font-black font-mono text-indigo-400">{results.totalMonthlyHours + results.totalMonthlyAVA}h</p>
-                        </div>
-                      </div>
-                      
-                      <div className="pt-4 border-t border-slate-700">
-                        <div className="flex justify-between text-xs mb-2">
-                          <span className="text-slate-400">Horas Consulta:</span>
-                          <span className="font-bold text-indigo-300">{results.totalMonthlyHours}h</span>
-                        </div>
-                        <div className="flex justify-between text-xs">
-                          <span className="text-slate-400">Horas AVA:</span>
-                          <span className="font-bold text-violet-300">{results.totalMonthlyAVA}h</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="bg-slate-900/50 p-4 rounded-2xl border border-slate-700/50">
-                      <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
-                        <Calendar className="w-3 h-3" />
-                        Discriminado de Horas por Mes
-                      </h4>
-                      <div className="space-y-3">
-                        {Object.entries(results.monthlyHours).length > 0 ? (
-                          Object.entries(results.monthlyHours).map(([month, hours]) => (
-                            <div key={month} className="flex justify-between items-center group">
-                              <span className="text-sm text-slate-400 capitalize group-hover:text-slate-200 transition-colors">{month}</span>
-                              <div className="flex items-center gap-3">
-                                <div className="h-1.5 w-24 bg-slate-800 rounded-full overflow-hidden">
-                                  <motion.div 
-                                    initial={{ width: 0 }}
-                                    animate={{ width: `${Math.min((hours / (results.totalMonthlyHours + results.totalMonthlyAVA)) * 100, 100)}%` }}
-                                    className="h-full bg-indigo-500"
-                                  />
-                                </div>
-                                <span className="text-sm font-bold font-mono text-indigo-400">{hours}h</span>
-                              </div>
-                            </div>
-                          ))
-                        ) : (
-                          <p className="text-xs text-slate-600 italic">No hay datos mensuales disponibles.</p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </motion.div>
-
+                {/* Main Totals Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <motion.div 
-                    whileHover={{ y: -4 }}
-                    className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm"
-                  >
-                    <div className="flex items-center gap-2 text-slate-400 mb-2">
+                  <div className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100 space-y-2">
+                    <div className="flex items-center gap-2 text-emerald-700">
                       <TrendingUp className="w-4 h-4" />
                       <span className="text-[10px] font-bold uppercase tracking-widest">Total Devengado</span>
                     </div>
-                    <div className="text-2xl font-black text-slate-800 font-mono">{formatCurrency(results.totalGross)}</div>
-                    <div className="mt-2 text-[10px] text-slate-400 font-medium">Incluye proporcionales de Prima y Vacaciones</div>
-                  </motion.div>
-
-                  <motion.div 
-                    whileHover={{ y: -4 }}
-                    className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm"
-                  >
-                    <div className="flex items-center gap-2 text-rose-400 mb-2">
+                    <p className="text-3xl font-bold text-emerald-800">{formatCurrency(results.totalGross)}</p>
+                  </div>
+                  <div className="bg-rose-50 p-6 rounded-3xl border border-rose-100 space-y-2">
+                    <div className="flex items-center gap-2 text-rose-700">
                       <TrendingDown className="w-4 h-4" />
-                      <span className="text-[10px] font-bold uppercase tracking-widest">Total Deducido</span>
+                      <span className="text-[10px] font-bold uppercase tracking-widest">Total Deducciones</span>
                     </div>
-                    <div className="text-2xl font-black text-rose-600 font-mono">-{formatCurrency(results.totalDeductions)}</div>
-                    <div className="mt-2 text-[10px] text-slate-400 font-medium">Legales + Adicionales</div>
-                  </motion.div>
-
-                  <motion.div 
-                    whileHover={{ y: -4 }}
-                    className="bg-indigo-600 p-6 rounded-3xl shadow-xl shadow-indigo-200 text-white"
-                  >
-                    <div className="flex items-center gap-2 text-indigo-200 mb-2">
+                    <p className="text-3xl font-bold text-rose-800">{formatCurrency(results.totalDeductions)}</p>
+                  </div>
+                  <div className="bg-indigo-600 p-6 rounded-3xl text-white space-y-2 shadow-xl shadow-indigo-100">
+                    <div className="flex items-center gap-2 opacity-80">
                       <Wallet className="w-4 h-4" />
-                      <span className="text-[10px] font-bold uppercase tracking-widest">Neto a Pagar</span>
+                      <span className="text-[10px] font-bold uppercase tracking-widest">Neto a Recibir</span>
                     </div>
-                    <div className="text-2xl font-black font-mono">{formatCurrency(results.net)}</div>
-                    <div className="mt-2 text-[10px] text-indigo-200 font-medium">Valor real a recibir</div>
-                  </motion.div>
+                    <p className="text-3xl font-bold">{formatCurrency(results.net)}</p>
+                  </div>
                 </div>
 
                 {/* Detailed Breakdown */}
-                <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden">
-                  <button 
-                    onClick={() => setShowDetails(!showDetails)}
-                    className="w-full p-6 flex items-center justify-between hover:bg-slate-50 transition-colors"
-                  >
-                    <div className="flex items-center gap-3">
-                      <Calculator className="w-5 h-5 text-indigo-600" />
-                      <span className="font-bold text-slate-800">Ver desglose financiero detallado</span>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
+                  {/* Income Breakdown */}
+                  <div className="space-y-6">
+                    <div className="flex items-center gap-2 text-emerald-600">
+                      <PlusCircle className="w-5 h-5" />
+                      <h4 className="font-bold uppercase tracking-wider text-sm">Ingresos Detallados</h4>
                     </div>
-                    {showDetails ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
-                  </button>
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                        <span className="text-sm font-medium text-slate-600">Sueldo Básico (Turnos)</span>
+                        <span className="font-bold text-slate-800">{formatCurrency(results.gross)}</span>
+                      </div>
+                      <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                        <span className="text-sm font-medium text-slate-600">Prima Proporcional</span>
+                        <span className="font-bold text-slate-800">{formatCurrency(results.primaProporcional)}</span>
+                      </div>
+                      <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                        <span className="text-sm font-medium text-slate-600">Vacaciones Proporcionales</span>
+                        <span className="font-bold text-slate-800">{formatCurrency(results.vacacionesProporcional)}</span>
+                      </div>
+                    </div>
+                  </div>
 
-                  <AnimatePresence>
-                    {showDetails && (
-                      <motion.div 
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        className="border-t border-slate-100"
-                      >
-                        <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
-                          <div className="space-y-4">
-                            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">💰 Origen de los Ingresos</h4>
-                            <div className="space-y-3">
-                              <div className="flex justify-between items-center p-3 bg-slate-50 rounded-xl">
-                                <span className="text-sm text-slate-600">Total por Horas</span>
-                                <span className="font-bold font-mono">{formatCurrency(results.totalH)}</span>
-                              </div>
-                              <div className="flex justify-between items-center p-3 bg-slate-50 rounded-xl">
-                                <span className="text-sm text-slate-600">Total por AVA</span>
-                                <span className="font-bold font-mono">{formatCurrency(results.totalAVA)}</span>
-                              </div>
-                              <div className="flex justify-between items-center p-3 bg-slate-50 rounded-xl">
-                                <span className="text-sm text-slate-600">Total por Pacientes</span>
-                                <span className="font-bold font-mono">{formatCurrency(results.totalP)}</span>
-                              </div>
-                              <div className="flex justify-between items-center p-3 bg-indigo-50 rounded-xl border border-indigo-100">
-                                <span className="text-sm text-indigo-700 font-bold">Prima Proporcional</span>
-                                <span className="font-bold font-mono text-indigo-700">+{formatCurrency(results.primaProporcional)}</span>
-                              </div>
-                              <div className="flex justify-between items-center p-3 bg-emerald-50 rounded-xl border border-emerald-100">
-                                <span className="text-sm text-emerald-700 font-bold">Vacaciones Proporcionales</span>
-                                <span className="font-bold font-mono text-emerald-700">+{formatCurrency(results.vacacionesProporcional)}</span>
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="space-y-4">
-                            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">📉 Detalle de Descuentos (Empleado)</h4>
-                            <div className="space-y-2">
-                              <table className="w-full text-sm">
-                                <thead>
-                                  <tr className="text-left text-[10px] text-slate-400 uppercase tracking-wider">
-                                    <th className="pb-2 font-bold">Concepto</th>
-                                    <th className="pb-2 font-bold text-right">Valor</th>
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100">
-                                  <tr>
-                                    <td className="py-2 text-slate-600">Salud (4%)</td>
-                                    <td className="py-2 text-right font-mono font-medium">{formatCurrency(results.health)}</td>
-                                  </tr>
-                                  <tr>
-                                    <td className="py-2 text-slate-600">Pensión (4%)</td>
-                                    <td className="py-2 text-right font-mono font-medium">{formatCurrency(results.pension)}</td>
-                                  </tr>
-                                  <tr>
-                                    <td className="py-2 text-slate-600">FSP (Solidaridad)</td>
-                                    <td className="py-2 text-right font-mono font-medium">{formatCurrency(results.fsp)}</td>
-                                  </tr>
-                                  <tr>
-                                    <td className="py-2 text-indigo-600 font-bold">Retención en la Fuente</td>
-                                    <td className="py-2 text-right font-mono font-bold text-indigo-600">{formatCurrency(results.retefuente)}</td>
-                                  </tr>
-                                  <tr className="border-t border-slate-100">
-                                    <td className="py-2 text-slate-500 italic">Total Deducciones Legales</td>
-                                    <td className="py-2 text-right font-mono text-slate-500">{formatCurrency(results.legalDeductions + results.retefuente)}</td>
-                                  </tr>
-                                  {additionalDeductions.map((d) => (
-                                    <tr key={d.id}>
-                                      <td className="py-2 text-indigo-600 font-medium">{d.concept || 'Sin concepto'}</td>
-                                      <td className="py-2 text-right font-mono font-bold text-indigo-600">{formatCurrency(d.amount)}</td>
-                                    </tr>
-                                  ))}
-                                  <tr className="font-bold text-rose-600 border-t-2 border-slate-100">
-                                    <td className="py-3">Total Deducciones</td>
-                                    <td className="py-3 text-right font-mono">{formatCurrency(results.totalDeductions)}</td>
-                                  </tr>
-                                </tbody>
-                              </table>
-                              
-                              <div className="space-y-4 mt-6 pt-6 border-t border-slate-100">
-                                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">✨ Beneficios Proporcionales</h4>
-                                <div className="space-y-3">
-                                  <div className="flex justify-between items-center p-3 bg-indigo-50 rounded-xl border border-indigo-100">
-                                    <div className="flex items-center gap-2">
-                                      <div>
-                                        <span className="text-sm text-indigo-700 font-bold">Prima Proporcional</span>
-                                        <p className="text-[10px] text-indigo-500">Basada en promedio de 6 meses</p>
-                                      </div>
-                                      <span title="Medio sueldo proporcional calculado sobre el promedio de lo facturado en los últimos 6 meses."><Info className="w-3.5 h-3.5 text-indigo-400" /></span>
-                                    </div>
-                                    <span className="font-bold font-mono text-indigo-700">+{formatCurrency(results.primaProporcional)}</span>
-                                  </div>
-                                  <div className="flex justify-between items-center p-3 bg-emerald-50 rounded-xl border border-emerald-100">
-                                    <div className="flex items-center gap-2">
-                                      <div>
-                                        <span className="text-sm text-emerald-700 font-bold">Vacaciones Proporcionales</span>
-                                        <p className="text-[10px] text-emerald-500">Basadas en promedio de 12 meses</p>
-                                      </div>
-                                      <span title="Proporcional de vacaciones (15 días por año) calculado sobre el promedio de lo facturado en los últimos 12 meses."><Info className="w-3.5 h-3.5 text-emerald-400" /></span>
-                                    </div>
-                                    <span className="font-bold font-mono text-emerald-700">+{formatCurrency(results.vacacionesProporcional)}</span>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                              <p className="text-[10px] text-slate-400 italic mt-4">* ARL: Asumida por el empleador. El FSP aplica si el total mensual supera 4 salarios mínimos.</p>
-                            </div>
-                          </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
+                  {/* Deductions Breakdown */}
+                  <div className="space-y-6">
+                    <div className="flex items-center gap-2 text-rose-600">
+                      <MinusCircle className="w-5 h-5" />
+                      <h4 className="font-bold uppercase tracking-wider text-sm">Deducciones Detalladas</h4>
+                    </div>
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                        <span className="text-sm font-medium text-slate-600">Salud (4%)</span>
+                        <span className="font-bold text-rose-700">-{formatCurrency(results.health)}</span>
+                      </div>
+                      <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                        <span className="text-sm font-medium text-slate-600">Pensión (4%)</span>
+                        <span className="font-bold text-rose-700">-{formatCurrency(results.pension)}</span>
+                      </div>
+                      {results.fsp > 0 && (
+                        <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                          <span className="text-sm font-medium text-slate-600">Fondo Solidaridad Pensional</span>
+                          <span className="font-bold text-rose-700">-{formatCurrency(results.fsp)}</span>
+                        </div>
+                      )}
+                      {results.retefuente > 0 && (
+                        <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                          <span className="text-sm font-medium text-slate-600">Retención en la Fuente</span>
+                          <span className="font-bold text-rose-700">-{formatCurrency(results.retefuente)}</span>
+                        </div>
+                      )}
+                      {results.additionalDeductions > 0 && (
+                        <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                          <span className="text-sm font-medium text-slate-600">Otras Deducciones</span>
+                          <span className="font-bold text-rose-700">-{formatCurrency(results.additionalDeductions)}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
-              </>
+              </div>
             ) : (
-              <div className="bg-white p-10 rounded-3xl border border-slate-200 text-center text-slate-400">
-                <Info className="w-8 h-8 mx-auto mb-4 opacity-20" />
-                <p>Ingresa al menos un turno para calcular el extracto financiero.</p>
+              <div className="bg-white p-20 rounded-[40px] border border-slate-200 border-dashed text-center space-y-4">
+                <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center mx-auto text-slate-300">
+                  <Calculator className="w-10 h-10" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="text-xl font-bold text-slate-800">Esperando Datos</h3>
+                  <p className="text-slate-500 max-w-xs mx-auto">Agrega turnos a la bitácora para generar el extracto final de pago.</p>
+                </div>
               </div>
             )}
+          </section>
+
+          {/* Step 5: Period History */}
+          <section className="space-y-6">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-sm">5</div>
+              <h2 className="text-xl font-bold text-slate-800">Historial de Periodos</h2>
+            </div>
+
+            <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+              {periods.length === 0 ? (
+                <div className="text-center py-10 space-y-4">
+                  <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto text-slate-400">
+                    <History className="w-8 h-8" />
+                  </div>
+                  <p className="text-slate-500 font-medium">No hay historial de periodos registrados.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {periods.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).map(p => (
+                    <div 
+                      key={p.id}
+                      onClick={() => setSelectedPeriodId(p.id)}
+                      className={`p-5 rounded-2xl border transition-all cursor-pointer group ${
+                        selectedPeriodId === p.id 
+                          ? 'bg-indigo-50 border-indigo-200 shadow-sm' 
+                          : 'bg-slate-50 border-transparent hover:bg-white hover:border-slate-200 hover:shadow-md'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-3">
+                        <div className={`p-2 rounded-xl ${p.status === 'active' ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-200 text-slate-500'}`}>
+                          <Calendar className="w-4 h-4" />
+                        </div>
+                        <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider ${
+                          p.status === 'active' ? 'bg-emerald-500 text-white' : 'bg-slate-300 text-slate-600'
+                        }`}>
+                          {p.status === 'active' ? 'Activo' : 'Archivado'}
+                        </span>
+                      </div>
+                      <h4 className="font-bold text-slate-800 mb-1 group-hover:text-indigo-600 transition-colors">{p.name}</h4>
+                      <p className="text-[10px] text-slate-500 font-medium">
+                        {p.startDate} al {p.endDate}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </section>
         </main>
       </div>
@@ -2524,6 +2392,85 @@ function MainApp() {
           © 2026 • Desarrollado para el Gremio Médico
         </div>
       </footer>
+      {/* Period Modal */}
+      <AnimatePresence>
+        {showPeriodModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-3xl shadow-2xl max-w-md w-full overflow-hidden"
+            >
+              <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-indigo-600 text-white">
+                <div className="flex items-center gap-3">
+                  <Calendar className="w-5 h-5" />
+                  <h3 className="font-bold">Nuevo Periodo de Facturación</h3>
+                </div>
+                <button onClick={() => setShowPeriodModal(false)} className="p-1 hover:bg-white/20 rounded-lg transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              
+              <div className="p-6 space-y-6">
+                <p className="text-sm text-slate-500 leading-relaxed">
+                  Al iniciar un nuevo periodo, el actual se archivará y podrás consultarlo más tarde. 
+                  Indica las fechas de inicio y fin para este nuevo ciclo.
+                </p>
+                
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 tracking-wider">Nombre del Periodo (Opcional)</label>
+                    <input 
+                      type="text"
+                      placeholder="Ej: Marzo 2026"
+                      value={newPeriodData.name}
+                      onChange={(e) => setNewPeriodData({ ...newPeriodData, name: e.target.value })}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                    />
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 tracking-wider">Fecha Inicio</label>
+                      <input 
+                        type="date"
+                        value={newPeriodData.startDate}
+                        onChange={(e) => setNewPeriodData({ ...newPeriodData, startDate: e.target.value })}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 tracking-wider">Fecha Fin</label>
+                      <input 
+                        type="date"
+                        value={newPeriodData.endDate}
+                        onChange={(e) => setNewPeriodData({ ...newPeriodData, endDate: e.target.value })}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="p-6 bg-slate-50 flex gap-3">
+                <button 
+                  onClick={() => setShowPeriodModal(false)}
+                  className="flex-1 py-3 border border-slate-200 text-slate-600 font-bold rounded-xl hover:bg-white transition-all"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={startNewPeriod}
+                  className="flex-1 py-3 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200"
+                >
+                  Iniciar Periodo
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
