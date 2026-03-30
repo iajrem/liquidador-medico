@@ -420,7 +420,13 @@ function MainApp() {
         prevYear--;
       }
       
-      const startDate = new Date(prevYear, prevMonth, cutoff + 1);
+      let startDate;
+      if (targetMonth === 2) { // March
+        startDate = new Date(targetYear, 1, 28); // Feb 28
+      } else {
+        startDate = new Date(prevYear, prevMonth, cutoff + 1);
+      }
+      
       const endDate = new Date(targetYear, targetMonth, cutoff);
 
       const toISODate = (date: Date) => {
@@ -846,6 +852,11 @@ function MainApp() {
 
       // A record belongs to the target cycle if:
       // (rMonth == targetMonth && rDay <= cutoff) OR (rMonth == targetMonth - 1 && rDay > cutoff)
+      // Special case for March cycle: starts Feb 28
+      if (targetMonth === 2) {
+        return (rMonth === 2 && rDay <= cutoff) || (rMonth === 1 && rDay >= 28);
+      }
+
       const isSameMonth = rMonth === targetMonth && rYear === targetYear;
       
       // Handle previous month correctly even for January (month 0)
@@ -1572,7 +1583,7 @@ function MainApp() {
               <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-4">
                 <div className="flex items-center gap-2 text-indigo-600 mb-2">
                   <Calendar className="w-5 h-5" />
-                  <h3 className="text-sm font-bold uppercase tracking-wider">Definir Periodo de Liquidación</h3>
+                  <h3 className="text-sm font-bold uppercase tracking-wider">Definir Periodo de Facturación</h3>
                 </div>
                 
                 <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
