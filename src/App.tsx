@@ -39,12 +39,10 @@ import {
   MinusCircle,
   History,
   Download,
-  RotateCcw,
-  FileDown
+  Upload,
+  RotateCcw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import { 
   auth, 
   db, 
@@ -142,6 +140,7 @@ interface BillingPeriod {
   status: 'active' | 'archived';
   createdAt: string;
   totalGross?: number;
+  rates?: Rates;
 }
 
 interface SavedCalculation {
@@ -512,6 +511,7 @@ function MainApp() {
   const [autoCalculatePatients, setAutoCalculatePatients] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [viewingArchive, setViewingArchive] = useState<SavedCalculation | null>(null);
+  const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
 
   // Load saved calculations from localStorage on mount
   useEffect(() => {
@@ -602,7 +602,8 @@ function MainApp() {
       startDate: newPeriodData.startDate,
       endDate: newPeriodData.endDate,
       status: 'active',
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      rates: { ...rates }
     };
 
     const path = `users/${user.uid}/periods/${periodId}`;
@@ -611,7 +612,8 @@ function MainApp() {
       if (activePeriod) {
         await updateDoc(doc(db, `users/${user.uid}/periods/${activePeriod.id}`), { 
           status: 'archived',
-          totalGross: results.gross
+          totalGross: results.gross,
+          rates: { ...rates } // Save current rates when archiving
         });
       }
       
@@ -714,14 +716,60 @@ function MainApp() {
         ...viewingArchive,
         records: viewingArchive.records.filter(r => r.id !== id)
       });
+      setSelectedRecordIds(prev => prev.filter(rid => rid !== id));
       return;
     }
 
     const path = `users/${user.uid}/records/${id}`;
     try {
       await deleteDoc(doc(db, path));
+      setSelectedRecordIds(prev => prev.filter(rid => rid !== id));
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, path);
+    }
+  };
+
+  const deleteSelectedRecords = async () => {
+    if (!user || selectedRecordIds.length === 0) return;
+    
+    if (!confirm(`¿Estás seguro de que deseas eliminar ${selectedRecordIds.length} registros seleccionados?`)) {
+      return;
+    }
+
+    if (viewingArchive) {
+      setViewingArchive({
+        ...viewingArchive,
+        records: viewingArchive.records.filter(r => !selectedRecordIds.includes(r.id))
+      });
+      setSelectedRecordIds([]);
+      return;
+    }
+
+    try {
+      for (const id of selectedRecordIds) {
+        const path = `users/${user.uid}/records/${id}`;
+        await deleteDoc(doc(db, path));
+      }
+      setSelectedRecordIds([]);
+      alert(`${selectedRecordIds.length} registros eliminados con éxito.`);
+    } catch (error) {
+      console.error("Error deleting multiple records:", error);
+      alert("Ocurrió un error al eliminar algunos registros.");
+    }
+  };
+
+  const toggleSelectRecord = (id: string) => {
+    setSelectedRecordIds(prev => 
+      prev.includes(id) ? prev.filter(rid => rid !== id) : [...prev, id]
+    );
+  };
+
+  const toggleSelectAll = () => {
+    const currentRecords = viewingArchive ? viewingArchive.records : records;
+    if (selectedRecordIds.length === currentRecords.length) {
+      setSelectedRecordIds([]);
+    } else {
+      setSelectedRecordIds(currentRecords.map(r => r.id));
     }
   };
 
@@ -754,15 +802,12 @@ function MainApp() {
     try {
       // Archive current active period if any
       if (activePeriod && activePeriod.id !== id) {
-        await updateDoc(doc(db, `users/${user.uid}/periods/${activePeriod.id}`), { 
-          status: 'archived',
-          totalGross: results.gross 
-        });
+        await updateDoc(doc(db, `users/${user.uid}/periods/${activePeriod.id}`), { status: 'archived' });
       }
       // Reactivate target period
       await updateDoc(doc(db, `users/${user.uid}/periods/${id}`), { status: 'active' });
       setSelectedPeriodId(id);
-      alert('Periodo reactivado con éxito. El periodo anterior ha sido archivado.');
+      alert('Periodo reactivado con éxito.');
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}/periods/${id}`);
     }
@@ -877,99 +922,6 @@ function MainApp() {
   };
 
   // --- Persistence Actions ---
-  const exportToPDF = () => {
-    const doc = new jsPDF();
-    const currentPeriod = periods.find(p => p.id === selectedPeriodId);
-    const periodName = currentPeriod?.name || 'Extracto de Pago';
-    const userName = user?.displayName || 'Usuario';
-    const userEmail = user?.email || '';
-
-    // Header
-    doc.setFontSize(20);
-    doc.setTextColor(79, 70, 229); // Indigo-600
-    doc.text('EXTRACTO DE NÓMINA', 105, 20, { align: 'center' });
-    
-    doc.setFontSize(10);
-    doc.setTextColor(100);
-    doc.text(`Generado el: ${new Date().toLocaleString()}`, 105, 28, { align: 'center' });
-
-    // User & Period Info
-    doc.setFontSize(12);
-    doc.setTextColor(0);
-    doc.text(`Colaborador: ${userName}`, 14, 45);
-    doc.text(`Email: ${userEmail}`, 14, 52);
-    doc.text(`Periodo: ${periodName}`, 14, 59);
-    doc.text(`Fechas: ${currentPeriod?.startDate || ''} a ${currentPeriod?.endDate || ''}`, 14, 66);
-
-    // Totals Summary Table
-    autoTable(doc, {
-      startY: 75,
-      head: [['Concepto', 'Cantidad/Detalle', 'Valor']],
-      body: [
-        ['Horas Totales (Reg + AVA)', results.totalMonthlyHours.toFixed(2), ''],
-        ['Pacientes Atendidos', results.totalMonthlyPatients.toString(), ''],
-        ['Total Devengado Bruto', '', formatCurrency(results.totalGross)],
-        ['Total Deducciones', '', formatCurrency(results.totalDeductions)],
-        ['Neto a Recibir', '', formatCurrency(results.net)],
-      ],
-      theme: 'striped',
-      headStyles: { fillColor: [79, 70, 229] },
-    });
-
-    // Income Breakdown Table
-    doc.setFontSize(14);
-    doc.text('Detalle de Ingresos (Salarial)', 14, (doc as any).lastAutoTable.finalY + 15);
-    
-    autoTable(doc, {
-      startY: (doc as any).lastAutoTable.finalY + 20,
-      head: [['Descripción', 'Horas/Cant', 'Valor']],
-      body: [
-        ['Sueldo Básico (Turnos Regulares)', (results.totalH / (rates.hourly.day || 1)).toFixed(1), formatCurrency(results.totalH)],
-        ['Horas AVA', (results.totalAVA / (rates.ava.day || 1)).toFixed(1), formatCurrency(results.totalAVA)],
-        ['Prima Proporcional', '-', formatCurrency(results.primaProporcional)],
-        ['Cesantías Proporcionales', '-', formatCurrency(results.cesantiasProporcional)],
-        ['Intereses Cesantías', '-', formatCurrency(results.interesesCesantias)],
-        ['Vacaciones Proporcionales', '-', formatCurrency(results.vacacionesProporcional)],
-      ],
-      theme: 'grid',
-      headStyles: { fillColor: [16, 185, 129] }, // Emerald-500
-    });
-
-    // Deductions Breakdown Table
-    doc.setFontSize(14);
-    doc.text('Detalle de Deducciones', 14, (doc as any).lastAutoTable.finalY + 15);
-    
-    const deductionsBody = [
-      ['Salud (4%)', formatCurrency(results.health)],
-      ['Pensión (4%)', formatCurrency(results.pension)],
-      ['ARL (0.522%)', formatCurrency(results.arl)],
-      ['Caja de Compensación (4%)', formatCurrency(results.caja)],
-    ];
-    
-    if (results.fsp > 0) deductionsBody.push(['Fondo Solidaridad Pensional', formatCurrency(results.fsp)]);
-    if (results.retefuente > 0) deductionsBody.push(['Retención en la Fuente', formatCurrency(results.retefuente)]);
-    if (results.additionalDeductions > 0) deductionsBody.push(['Otras Deducciones', formatCurrency(results.additionalDeductions)]);
-
-    autoTable(doc, {
-      startY: (doc as any).lastAutoTable.finalY + 20,
-      head: [['Descripción', 'Valor']],
-      body: deductionsBody,
-      theme: 'grid',
-      headStyles: { fillColor: [225, 29, 72] }, // Rose-600
-    });
-
-    // Footer
-    const pageCount = (doc as any).internal.getNumberOfPages();
-    for (let i = 1; i <= pageCount; i++) {
-      doc.setPage(i);
-      doc.setFontSize(8);
-      doc.setTextColor(150);
-      doc.text(`Página ${i} de ${pageCount} - Calculadora EMI Colombia`, 105, 285, { align: 'center' });
-    }
-
-    doc.save(`Nomina_${periodName.replace(/\s+/g, '_')}_${userName.replace(/\s+/g, '_')}.pdf`);
-  };
-
   const saveCurrentCalculation = () => {
     const baseRecords = viewingArchive ? viewingArchive.records : records;
     if (!calcName.trim()) {
@@ -1080,6 +1032,10 @@ function MainApp() {
 
     // Determine which records to use: Archive or Live
     const baseRecords = viewingArchive ? viewingArchive.records : records;
+    
+    // Determine which rates to use: Archive, Period-specific, or Current
+    const currentPeriod = periods.find(p => p.id === selectedPeriodId);
+    const calculationRates = viewingArchive ? viewingArchive.rates : (currentPeriod?.rates || rates);
 
     // If editing, replace the record in the list with the current form values
     let recordsToCalculate = [...baseRecords];
@@ -1111,10 +1067,10 @@ function MainApp() {
       hoursBreakdown.holidayDay += record.hours.holidayDay;
       hoursBreakdown.holidayNight += record.hours.holidayNight;
 
-      hoursValues.day += record.hours.day * rates.hourly.day;
-      hoursValues.night += record.hours.night * rates.hourly.night;
-      hoursValues.holidayDay += record.hours.holidayDay * rates.hourly.holidayDay;
-      hoursValues.holidayNight += record.hours.holidayNight * rates.hourly.holidayNight;
+      hoursValues.day += record.hours.day * calculationRates.hourly.day;
+      hoursValues.night += record.hours.night * calculationRates.hourly.night;
+      hoursValues.holidayDay += record.hours.holidayDay * calculationRates.hourly.holidayDay;
+      hoursValues.holidayNight += record.hours.holidayNight * calculationRates.hourly.holidayNight;
 
       // AVA Hours
       avaBreakdown.day += record.ava.day;
@@ -1122,22 +1078,22 @@ function MainApp() {
       avaBreakdown.holidayDay += record.ava.holidayDay;
       avaBreakdown.holidayNight += record.ava.holidayNight;
 
-      avaValues.day += record.ava.day * rates.ava.day;
-      avaValues.night += record.ava.night * rates.ava.night;
-      avaValues.holidayDay += record.ava.holidayDay * rates.ava.holidayDay;
-      avaValues.holidayNight += record.ava.holidayNight * rates.ava.holidayNight;
+      avaValues.day += record.ava.day * calculationRates.ava.day;
+      avaValues.night += record.ava.night * calculationRates.ava.night;
+      avaValues.holidayDay += record.ava.holidayDay * calculationRates.ava.holidayDay;
+      avaValues.holidayNight += record.ava.holidayNight * calculationRates.ava.holidayNight;
 
       totalH += 
-        (record.hours.day * rates.hourly.day) +
-        (record.hours.night * rates.hourly.night) +
-        (record.hours.holidayDay * rates.hourly.holidayDay) +
-        (record.hours.holidayNight * rates.hourly.holidayNight);
+        (record.hours.day * calculationRates.hourly.day) +
+        (record.hours.night * calculationRates.hourly.night) +
+        (record.hours.holidayDay * calculationRates.hourly.holidayDay) +
+        (record.hours.holidayNight * calculationRates.hourly.holidayNight);
       
       totalAVA += 
-        (record.ava.day * rates.ava.day) +
-        (record.ava.night * rates.ava.night) +
-        (record.ava.holidayDay * rates.ava.holidayDay) +
-        (record.ava.holidayNight * rates.ava.holidayNight);
+        (record.ava.day * calculationRates.ava.day) +
+        (record.ava.night * calculationRates.ava.night) +
+        (record.ava.holidayDay * calculationRates.ava.holidayDay) +
+        (record.ava.holidayNight * calculationRates.ava.holidayNight);
 
       const rDate = new Date(record.date + 'T00:00:00');
       const monthName = rDate.toLocaleString('es-ES', { month: 'long', year: 'numeric' });
@@ -1151,28 +1107,24 @@ function MainApp() {
         patientsBreakdown.holidayDay += record.patients.holidayDay;
         patientsBreakdown.holidayNight += record.patients.holidayNight;
 
-        patientsValues.day += record.patients.day * rates.patient.day;
-        patientsValues.night += record.patients.night * rates.patient.night;
-        patientsValues.holidayDay += record.patients.holidayDay * rates.patient.holidayDay;
-        patientsValues.holidayNight += record.patients.holidayNight * rates.patient.holidayNight;
+        patientsValues.day += record.patients.day * calculationRates.patient.day;
+        patientsValues.night += record.patients.night * calculationRates.patient.night;
+        patientsValues.holidayDay += record.patients.holidayDay * calculationRates.patient.holidayDay;
+        patientsValues.holidayNight += record.patients.holidayNight * calculationRates.patient.holidayNight;
 
         totalP += 
-          (record.patients.day * rates.patient.day) +
-          (record.patients.night * rates.patient.night) +
-          (record.patients.holidayDay * rates.patient.holidayDay) +
-          (record.patients.holidayNight * rates.patient.holidayNight);
+          (record.patients.day * calculationRates.patient.day) +
+          (record.patients.night * calculationRates.patient.night) +
+          (record.patients.holidayDay * calculationRates.patient.holidayDay) +
+          (record.patients.holidayNight * calculationRates.patient.holidayNight);
       }
     });
 
-    const totalMonthlyHours = 
-      (hoursBreakdown.day + hoursBreakdown.night + hoursBreakdown.holidayDay + hoursBreakdown.holidayNight) +
-      (avaBreakdown.day + avaBreakdown.night + avaBreakdown.holidayDay + avaBreakdown.holidayNight);
+    const totalMonthlyHours = hoursBreakdown.day + hoursBreakdown.night + hoursBreakdown.holidayDay + hoursBreakdown.holidayNight;
     const totalMonthlyAVA = avaBreakdown.day + avaBreakdown.night + avaBreakdown.holidayDay + avaBreakdown.holidayNight;
     const totalMonthlyPatients = patientsBreakdown.day + patientsBreakdown.night + patientsBreakdown.holidayDay + patientsBreakdown.holidayNight;
 
-    // Gross calculation: Regular Hours + AVA Hours. 
-    // Patients are considered "included" in the hourly rate for regular shifts as per user feedback.
-    const gross = totalH + totalAVA;
+    const gross = totalH + totalP + totalAVA;
     // IBC is capped at 25 SMMLV and should be at least 1 SMMLV if there is income
     const ibc = gross > 0 ? Math.max(Math.min(gross, SMMLV_2026 * 25), SMMLV_2026) : 0;
 
@@ -1195,7 +1147,6 @@ function MainApp() {
     const legalDeductions = health + pension + fsp + arl;
 
     // --- Proportional Calculations based on Period History ---
-    const currentPeriod = periods.find(p => p.id === selectedPeriodId);
     const otherPeriods = periods.filter(p => p.id !== selectedPeriodId && p.endDate < (currentPeriod?.startDate || ''));
     const sortedOthers = [...otherPeriods].sort((a, b) => b.endDate.localeCompare(a.endDate));
     
@@ -1217,7 +1168,7 @@ function MainApp() {
     const vacacionesProporcional = avg12 / 24;
 
     // --- Retefuente Calculation (Procedimiento 1 - Art. 383, 387, 388 ET) ---
-    const uvt = rates.payroll.uvtValue;
+    const uvt = calculationRates.payroll.uvtValue;
     // Primas and Vacations are usually not part of the monthly taxable base for Retefuente
     const totalIncomeForTax = gross; 
     
@@ -1225,12 +1176,12 @@ function MainApp() {
     const netIncome = totalIncomeForTax - legalDeductions;
     
     // 2. Deducciones (Art. 387)
-    const dedDependents = rates.payroll.dependents ? Math.min(totalIncomeForTax * 0.1, 32 * uvt) : 0;
-    const dedPrepagada = Math.min(rates.payroll.prepagada, 16 * uvt);
-    const dedInteresesVivienda = Math.min(rates.payroll.interesesVivienda, 100 * uvt);
+    const dedDependents = calculationRates.payroll.dependents ? Math.min(totalIncomeForTax * 0.1, 32 * uvt) : 0;
+    const dedPrepagada = Math.min(calculationRates.payroll.prepagada, 16 * uvt);
+    const dedInteresesVivienda = Math.min(calculationRates.payroll.interesesVivienda, 100 * uvt);
     
     // 3. Rentas Exentas (Art. 126-1, 126-4)
-    const dedPensionVol = Math.min(rates.payroll.pensionVoluntaria, totalIncomeForTax * 0.3, 3800 * uvt / 12);
+    const dedPensionVol = Math.min(calculationRates.payroll.pensionVoluntaria, totalIncomeForTax * 0.3, 3800 * uvt / 12);
     
     // 4. Subtotal for 25% Exemption
     const subtotalForExempt25 = netIncome - dedDependents - dedPrepagada - dedInteresesVivienda - dedPensionVol;
@@ -1299,23 +1250,6 @@ function MainApp() {
       monthlyHours
     };
   }, [records, rates, additionalDeductions, viewingArchive, shift, quantities, editingId, user, selectedPeriodId]);
-
-  // Auto-update period totalGross in Firestore when results change
-  useEffect(() => {
-    if (!user || !selectedPeriodId || viewingArchive) return;
-    
-    const timeout = setTimeout(async () => {
-      const path = `users/${user.uid}/periods/${selectedPeriodId}`;
-      try {
-        await updateDoc(doc(db, path), { totalGross: results.gross });
-      } catch (error) {
-        // Silent error for auto-updates to avoid annoying the user
-        console.error('Auto-update period totalGross failed', error);
-      }
-    }, 2000); // Debounce for 2 seconds
-
-    return () => clearTimeout(timeout);
-  }, [results.gross, user, selectedPeriodId, viewingArchive]);
 
   if (!isAuthReady) {
     return (
@@ -2223,25 +2157,40 @@ function MainApp() {
                 )}
                 <button 
                   onClick={addRecord}
-                  className={`flex-[2] ${editingId ? 'bg-amber-500 hover:bg-amber-600' : 'bg-indigo-600 hover:bg-indigo-700'} text-white font-bold py-4 rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2`}
+                  disabled={periods.find(p => p.id === selectedPeriodId)?.status !== 'active' && !viewingArchive}
+                  className={`flex-[2] ${editingId ? 'bg-amber-500 hover:bg-amber-600' : 'bg-indigo-600 hover:bg-indigo-700'} text-white font-bold py-4 rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed`}
                 >
                   <Calculator className="w-5 h-5" />
                   {editingId ? 'Actualizar Registro' : 'Agregar a la Bitácora'}
                 </button>
               </div>
+              {periods.find(p => p.id === selectedPeriodId)?.status !== 'active' && !viewingArchive && (
+                <p className="text-center text-xs text-amber-600 font-bold bg-amber-50 p-2 rounded-xl border border-amber-100">
+                  Este periodo está archivado. Reactívalo para agregar nuevos turnos.
+                </p>
+              )}
             </div>
           </section>
 
           {/* Step 3: Log (Bitácora) */}
           <section className="space-y-6">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-sm">3</div>
-                <h2 className="text-xl font-bold text-slate-800">
-                  {viewingArchive ? `Extracto: ${viewingArchive.name}` : 'Bitácora de Turnos'}
-                </h2>
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-sm">3</div>
+                  <h2 className="text-xl font-bold text-slate-800">
+                    {viewingArchive ? `Extracto: ${viewingArchive.name}` : 'Bitácora de Turnos'}
+                  </h2>
+                </div>
+                {selectedRecordIds.length > 0 && (
+                  <button 
+                    onClick={deleteSelectedRecords}
+                    className="px-4 py-2 bg-rose-600 text-white text-xs font-bold rounded-xl hover:bg-rose-700 transition-all flex items-center gap-2 shadow-lg shadow-rose-100"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Eliminar Seleccionados ({selectedRecordIds.length})
+                  </button>
+                )}
               </div>
-            </div>
 
             <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
               {/* Legend */}
@@ -2268,6 +2217,14 @@ function MainApp() {
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200">
+                      <th className="p-4 w-10">
+                        <input 
+                          type="checkbox" 
+                          checked={selectedRecordIds.length > 0 && selectedRecordIds.length === (viewingArchive ? viewingArchive.records : records).length}
+                          onChange={toggleSelectAll}
+                          className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                        />
+                      </th>
                       <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Fecha</th>
                       <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Horario</th>
                       <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Horas Consulta</th>
@@ -2291,8 +2248,16 @@ function MainApp() {
                             initial={{ opacity: 0, y: 10 }}
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, x: -20 }}
-                            className="hover:bg-slate-50/50 transition-colors"
+                            className={`hover:bg-slate-50/50 transition-colors ${selectedRecordIds.includes(record.id) ? 'bg-indigo-50/30' : ''}`}
                           >
+                            <td className="p-4">
+                              <input 
+                                type="checkbox" 
+                                checked={selectedRecordIds.includes(record.id)}
+                                onChange={() => toggleSelectRecord(record.id)}
+                                className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                              />
+                            </td>
                             <td className="p-4 text-sm font-medium text-slate-700">{record.date}</td>
                             <td className="p-4 text-xs font-mono text-slate-500">
                               {record.startTime} - {record.endTime === '00:00' ? '00:00 (Siguiente día)' : record.endTime}
@@ -2405,7 +2370,7 @@ function MainApp() {
                   {(viewingArchive ? viewingArchive.records : records).length > 0 && (
                     <tfoot className="bg-slate-50 border-t-2 border-slate-200">
                       <tr>
-                        <td colSpan={2} className="p-4 text-right text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                        <td colSpan={3} className="p-4 text-right text-[10px] font-bold text-slate-400 uppercase tracking-widest">
                           Totales del Periodo:
                         </td>
                         <td className="p-4 text-xs font-mono font-black text-indigo-600">
@@ -2491,13 +2456,6 @@ function MainApp() {
                       title="Imprimir Extracto"
                     >
                       <Printer className="w-5 h-5" />
-                    </button>
-                    <button 
-                      onClick={exportToPDF}
-                      className="px-6 py-3 bg-emerald-600 text-white font-bold rounded-2xl hover:bg-emerald-700 transition-all flex items-center gap-2 shadow-lg shadow-emerald-200"
-                    >
-                      <FileDown className="w-5 h-5" />
-                      Exportar PDF
                     </button>
                     <button 
                       onClick={saveCurrentCalculation}
