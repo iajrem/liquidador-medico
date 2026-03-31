@@ -39,10 +39,12 @@ import {
   MinusCircle,
   History,
   Download,
-  Upload,
-  RotateCcw
+  RotateCcw,
+  FileDown
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { 
   auth, 
   db, 
@@ -763,89 +765,6 @@ function MainApp() {
     }
   };
 
-  const importFromCSV = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file || !user) return;
-
-    if (!selectedPeriodId) {
-      alert('Por favor, selecciona o inicia un periodo de facturación antes de importar.');
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const text = e.target?.result as string;
-      const lines = text.split(/\r?\n/);
-      if (lines.length < 2) return;
-
-      // Detect delimiter (comma or semicolon)
-      const firstLine = lines[0];
-      const delimiter = firstLine.includes(';') ? ';' : ',';
-      const headers = firstLine.split(delimiter).map(h => h.trim().replace(/^"|"$/g, ''));
-      
-      const recordsToImport: ShiftRecord[] = [];
-      for (let i = 1; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line || line.startsWith('RESUMEN') || line === '') continue;
-        
-        const values = line.split(delimiter).map(v => v.trim().replace(/^"|"$/g, ''));
-        if (values.length < 3) continue;
-
-        const getVal = (headerName: string) => {
-          const index = headers.indexOf(headerName);
-          return index !== -1 ? values[index] : '';
-        };
-
-        const record: ShiftRecord = {
-          id: crypto.randomUUID(),
-          userId: user.uid,
-          periodId: selectedPeriodId,
-          date: getVal('Fecha'),
-          startTime: getVal('Inicio'),
-          endTime: getVal('Fin'),
-          hours: {
-            day: Number(getVal('Horas Diu') || 0),
-            night: Number(getVal('Horas Noc') || 0),
-            holidayDay: Number(getVal('Horas F-Diu') || 0),
-            holidayNight: Number(getVal('Horas F-Noc') || 0),
-          },
-          ava: {
-            day: Number(getVal('AVA Diu') || 0),
-            night: Number(getVal('AVA Noc') || 0),
-            holidayDay: Number(getVal('AVA F-Diu') || 0),
-            holidayNight: Number(getVal('AVA F-Noc') || 0),
-          },
-          patients: {
-            day: Number(getVal('Pac Diu') || 0),
-            night: Number(getVal('Pac Noc') || 0),
-            holidayDay: Number(getVal('Pac F-Diu') || 0),
-            holidayNight: Number(getVal('Pac F-Noc') || 0),
-          },
-          applyPatients: true,
-          isDefinitive: getVal('Estado') === 'Definitivo',
-        };
-
-        if (record.date && record.startTime && record.endTime) {
-          recordsToImport.push(record);
-        }
-      }
-
-      if (recordsToImport.length > 0) {
-        try {
-          for (const record of recordsToImport) {
-            await setDoc(doc(db, `users/${user.uid}/records/${record.id}`), record);
-          }
-          alert(`${recordsToImport.length} registros importados con éxito.`);
-        } catch (error) {
-          handleFirestoreError(error, OperationType.CREATE, `users/${user.uid}/records`);
-        }
-      }
-    };
-    reader.readAsText(file);
-    // Reset input to allow re-importing the same file if needed
-    event.target.value = '';
-  };
-
   const toggleRecordStatus = async (id: string) => {
     if (!user) return;
 
@@ -955,6 +874,96 @@ function MainApp() {
   };
 
   // --- Persistence Actions ---
+  const exportToPDF = () => {
+    const doc = new jsPDF();
+    const currentPeriod = periods.find(p => p.id === selectedPeriodId);
+    const periodName = currentPeriod?.name || 'Extracto de Pago';
+    const userName = user?.displayName || 'Usuario';
+    const userEmail = user?.email || '';
+
+    // Header
+    doc.setFontSize(20);
+    doc.setTextColor(79, 70, 229); // Indigo-600
+    doc.text('EXTRACTO DE NÓMINA', 105, 20, { align: 'center' });
+    
+    doc.setFontSize(10);
+    doc.setTextColor(100);
+    doc.text(`Generado el: ${new Date().toLocaleString()}`, 105, 28, { align: 'center' });
+
+    // User & Period Info
+    doc.setFontSize(12);
+    doc.setTextColor(0);
+    doc.text(`Colaborador: ${userName}`, 14, 45);
+    doc.text(`Email: ${userEmail}`, 14, 52);
+    doc.text(`Periodo: ${periodName}`, 14, 59);
+    doc.text(`Fechas: ${currentPeriod?.startDate || ''} a ${currentPeriod?.endDate || ''}`, 14, 66);
+
+    // Totals Summary Table
+    autoTable(doc, {
+      startY: 75,
+      head: [['Concepto', 'Valor']],
+      body: [
+        ['Total Devengado', formatCurrency(results.totalGross)],
+        ['Total Deducciones', formatCurrency(results.totalDeductions)],
+        ['Neto a Recibir', formatCurrency(results.net)],
+      ],
+      theme: 'striped',
+      headStyles: { fillColor: [79, 70, 229] },
+    });
+
+    // Income Breakdown Table
+    doc.setFontSize(14);
+    doc.text('Detalle de Ingresos', 14, (doc as any).lastAutoTable.finalY + 15);
+    
+    autoTable(doc, {
+      startY: (doc as any).lastAutoTable.finalY + 20,
+      head: [['Descripción', 'Valor']],
+      body: [
+        ['Sueldo Básico (Turnos)', formatCurrency(results.gross)],
+        ['Prima Proporcional', formatCurrency(results.primaProporcional)],
+        ['Cesantías Proporcionales', formatCurrency(results.cesantiasProporcional)],
+        ['Intereses Cesantías', formatCurrency(results.interesesCesantias)],
+        ['Vacaciones Proporcionales', formatCurrency(results.vacacionesProporcional)],
+      ],
+      theme: 'grid',
+      headStyles: { fillColor: [16, 185, 129] }, // Emerald-500
+    });
+
+    // Deductions Breakdown Table
+    doc.setFontSize(14);
+    doc.text('Detalle de Deducciones', 14, (doc as any).lastAutoTable.finalY + 15);
+    
+    const deductionsBody = [
+      ['Salud (4%)', formatCurrency(results.health)],
+      ['Pensión (4%)', formatCurrency(results.pension)],
+      ['ARL (0.522%)', formatCurrency(results.arl)],
+      ['Caja de Compensación (4%)', formatCurrency(results.caja)],
+    ];
+    
+    if (results.fsp > 0) deductionsBody.push(['Fondo Solidaridad Pensional', formatCurrency(results.fsp)]);
+    if (results.retefuente > 0) deductionsBody.push(['Retención en la Fuente', formatCurrency(results.retefuente)]);
+    if (results.additionalDeductions > 0) deductionsBody.push(['Otras Deducciones', formatCurrency(results.additionalDeductions)]);
+
+    autoTable(doc, {
+      startY: (doc as any).lastAutoTable.finalY + 20,
+      head: [['Descripción', 'Valor']],
+      body: deductionsBody,
+      theme: 'grid',
+      headStyles: { fillColor: [225, 29, 72] }, // Rose-600
+    });
+
+    // Footer
+    const pageCount = (doc as any).internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+      doc.setPage(i);
+      doc.setFontSize(8);
+      doc.setTextColor(150);
+      doc.text(`Página ${i} de ${pageCount} - Calculadora EMI Colombia`, 105, 285, { align: 'center' });
+    }
+
+    doc.save(`Nomina_${periodName.replace(/\s+/g, '_')}_${userName.replace(/\s+/g, '_')}.pdf`);
+  };
+
   const saveCurrentCalculation = () => {
     const baseRecords = viewingArchive ? viewingArchive.records : records;
     if (!calcName.trim()) {
@@ -1159,6 +1168,8 @@ function MainApp() {
 
     const health = ibc * 0.04;
     const pension = ibc * 0.04;
+    const arl = ibc * 0.00522; // Riesgo 1 (0.522%)
+    const caja = ibc * 0.04; // Caja de Compensación (4%) - Aunque suele ser del empleador, algunos usuarios lo incluyen
     
     let fsp = 0;
     if (ibc >= SMMLV_2026 * 4) {
@@ -1171,19 +1182,22 @@ function MainApp() {
     }
 
     const sumAdditionalDeductions = additionalDeductions.reduce((sum, d) => sum + d.amount, 0);
-    const legalDeductions = health + pension + fsp;
+    const legalDeductions = health + pension + fsp + arl;
 
     // --- Proportional Calculations based on Period History ---
     const currentPeriod = periods.find(p => p.id === selectedPeriodId);
     const otherPeriods = periods.filter(p => p.id !== selectedPeriodId && p.endDate < (currentPeriod?.startDate || ''));
     const sortedOthers = [...otherPeriods].sort((a, b) => b.endDate.localeCompare(a.endDate));
     
-    // Prima Proporcional (Average of last 6 months including current)
+    // Average of last 6 months including current for Prima and Cesantías
     const last5Others = sortedOthers.slice(0, 5);
     const total6 = last5Others.reduce((sum, p) => sum + (p.totalGross || 0), 0) + gross;
     const count6 = last5Others.length + 1;
     const avg6 = total6 / count6;
+    
     const primaProporcional = avg6 / 12;
+    const cesantiasProporcional = avg6 / 12;
+    const interesesCesantias = cesantiasProporcional * 0.12;
 
     // Vacaciones Proporcionales (Average of last 12 months including current)
     const last11Others = sortedOthers.slice(0, 11);
@@ -1235,7 +1249,7 @@ function MainApp() {
     }
 
     const totalDeductions = legalDeductions + sumAdditionalDeductions + retefuente;
-    const totalGross = gross + primaProporcional + vacacionesProporcional;
+    const totalGross = gross + primaProporcional + vacacionesProporcional + cesantiasProporcional + interesesCesantias;
     const net = totalGross - totalDeductions;
 
     // Calculate effective deduction rate for per-shift net display
@@ -1249,15 +1263,20 @@ function MainApp() {
       totalGross,
       health,
       pension,
+      arl,
+      caja,
       fsp,
       retefuente,
       primaProporcional,
       vacacionesProporcional,
+      cesantiasProporcional,
+      interesesCesantias,
       legalDeductions,
       additionalDeductions: sumAdditionalDeductions,
       totalDeductions,
       net,
       effectiveDeductionRate,
+      ibc,
       hoursBreakdown,
       hoursValues,
       avaBreakdown,
@@ -1937,18 +1956,6 @@ function MainApp() {
                   <FilePlus className="w-5 h-5" />
                   <h3 className="text-sm font-bold uppercase tracking-wider">Registrar Turno</h3>
                 </div>
-                <div className="flex items-center gap-2">
-                  <label className="cursor-pointer px-3 py-1.5 bg-slate-100 text-slate-600 text-[10px] font-bold rounded-lg hover:bg-slate-200 transition-all flex items-center gap-2">
-                    <Upload className="w-3 h-3" />
-                    Importar CSV
-                    <input 
-                      type="file" 
-                      accept=".csv" 
-                      onChange={importFromCSV} 
-                      className="hidden" 
-                    />
-                  </label>
-                </div>
               </div>
               <div className="flex items-start gap-3 bg-blue-50 p-4 rounded-2xl text-blue-700 text-sm leading-relaxed">
                 <Info className="w-5 h-5 shrink-0 mt-0.5" />
@@ -2459,6 +2466,13 @@ function MainApp() {
                       <Printer className="w-5 h-5" />
                     </button>
                     <button 
+                      onClick={exportToPDF}
+                      className="px-6 py-3 bg-emerald-600 text-white font-bold rounded-2xl hover:bg-emerald-700 transition-all flex items-center gap-2 shadow-lg shadow-emerald-200"
+                    >
+                      <FileDown className="w-5 h-5" />
+                      Exportar PDF
+                    </button>
+                    <button 
                       onClick={saveCurrentCalculation}
                       className="px-6 py-3 bg-indigo-600 text-white font-bold rounded-2xl hover:bg-indigo-700 transition-all flex items-center gap-2 shadow-lg shadow-indigo-200"
                     >
@@ -2515,6 +2529,14 @@ function MainApp() {
                         <span className="font-bold text-slate-800">{formatCurrency(results.primaProporcional)}</span>
                       </div>
                       <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                        <span className="text-sm font-medium text-slate-600">Cesantías Proporcionales</span>
+                        <span className="font-bold text-slate-800">{formatCurrency(results.cesantiasProporcional)}</span>
+                      </div>
+                      <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                        <span className="text-sm font-medium text-slate-600">Intereses Cesantías</span>
+                        <span className="font-bold text-slate-800">{formatCurrency(results.interesesCesantias)}</span>
+                      </div>
+                      <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
                         <span className="text-sm font-medium text-slate-600">Vacaciones Proporcionales</span>
                         <span className="font-bold text-slate-800">{formatCurrency(results.vacacionesProporcional)}</span>
                       </div>
@@ -2529,12 +2551,23 @@ function MainApp() {
                     </div>
                     <div className="space-y-4">
                       <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                        <span className="text-sm font-medium text-slate-600">Salud (4%)</span>
+                        <div className="flex flex-col">
+                          <span className="text-sm font-medium text-slate-600">Salud (4%)</span>
+                          <span className="text-[10px] text-slate-400">IBC: {formatCurrency(results.ibc)}</span>
+                        </div>
                         <span className="font-bold text-rose-700">-{formatCurrency(results.health)}</span>
                       </div>
                       <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
                         <span className="text-sm font-medium text-slate-600">Pensión (4%)</span>
                         <span className="font-bold text-rose-700">-{formatCurrency(results.pension)}</span>
+                      </div>
+                      <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                        <span className="text-sm font-medium text-slate-600">ARL (0.522%)</span>
+                        <span className="font-bold text-rose-700">-{formatCurrency(results.arl)}</span>
+                      </div>
+                      <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                        <span className="text-sm font-medium text-slate-600">Caja de Compensación (4%)</span>
+                        <span className="font-bold text-slate-800">{formatCurrency(results.caja)}</span>
                       </div>
                       {results.fsp > 0 && (
                         <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
