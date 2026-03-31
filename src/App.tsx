@@ -234,22 +234,22 @@ const SMMLV_2026 = 1750905;
 
 const DEFAULT_RATES: Rates = {
   hourly: {
-    day: 21997.21,
-    night: 29697.77,
-    holidayDay: 38497.50,
-    holidayNight: 46194.00,
+    day: 23339.04,
+    night: 31509.33,
+    holidayDay: 40845.85,
+    holidayNight: 49011.83,
   },
   ava: {
-    day: 35541.95,
-    night: 47981.16,
-    holidayDay: 62199.22,
-    holidayNight: 74639.48,
+    day: 37710.01,
+    night: 50908.01,
+    holidayDay: 65993.37,
+    holidayNight: 79192.49,
   },
   patient: {
-    day: 10203.70,
-    night: 13776.26,
-    holidayDay: 17856.47,
-    holidayNight: 21426.00,
+    day: 10826.13,
+    night: 14616.61,
+    holidayDay: 18945.71,
+    holidayNight: 22732.99,
   },
   payroll: {
     uvtValue: 49786, // Estimated for 2026
@@ -616,6 +616,33 @@ function MainApp() {
     }
   };
 
+  const applyRateAdjustment = () => {
+    const factor = 1.061;
+    const newRates = {
+      ...rates,
+      hourly: {
+        day: Number((rates.hourly.day * factor).toFixed(2)),
+        night: Number((rates.hourly.night * factor).toFixed(2)),
+        holidayDay: Number((rates.hourly.holidayDay * factor).toFixed(2)),
+        holidayNight: Number((rates.hourly.holidayNight * factor).toFixed(2)),
+      },
+      ava: {
+        day: Number((rates.ava.day * factor).toFixed(2)),
+        night: Number((rates.ava.night * factor).toFixed(2)),
+        holidayDay: Number((rates.ava.holidayDay * factor).toFixed(2)),
+        holidayNight: Number((rates.ava.holidayNight * factor).toFixed(2)),
+      },
+      patient: {
+        day: Number((rates.patient.day * factor).toFixed(2)),
+        night: Number((rates.patient.night * factor).toFixed(2)),
+        holidayDay: Number((rates.patient.holidayDay * factor).toFixed(2)),
+        holidayNight: Number((rates.patient.holidayNight * factor).toFixed(2)),
+      }
+    };
+    setRates(newRates);
+    alert('Se ha aplicado un aumento del 6.1% a todas las tarifas.');
+  };
+
   const addRecord = async () => {
     if (!user) return;
     if (!selectedPeriodId) {
@@ -759,57 +786,69 @@ function MainApp() {
 
   const importFromCSV = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (!file || !user || !selectedPeriodId) return;
+    if (!file || !user) return;
+
+    if (!selectedPeriodId) {
+      alert('Por favor, selecciona o inicia un periodo de facturación antes de importar.');
+      return;
+    }
 
     const reader = new FileReader();
     reader.onload = async (e) => {
       const text = e.target?.result as string;
-      const lines = text.split('\n');
-      const headers = lines[0].split(',');
-      
-      // Basic validation of headers
-      if (!headers.includes('Fecha') || !headers.includes('Inicio') || !headers.includes('Fin')) {
-        alert('El archivo CSV no tiene el formato correcto. Asegúrate de que tenga las columnas Fecha, Inicio y Fin.');
-        return;
-      }
+      const lines = text.split(/\r?\n/);
+      if (lines.length < 2) return;
 
+      // Detect delimiter (comma or semicolon)
+      const firstLine = lines[0];
+      const delimiter = firstLine.includes(';') ? ';' : ',';
+      const headers = firstLine.split(delimiter).map(h => h.trim().replace(/^"|"$/g, ''));
+      
       const recordsToImport: ShiftRecord[] = [];
       for (let i = 1; i < lines.length; i++) {
         const line = lines[i].trim();
         if (!line || line.startsWith('RESUMEN') || line === '') continue;
         
-        const values = line.split(',');
+        const values = line.split(delimiter).map(v => v.trim().replace(/^"|"$/g, ''));
         if (values.length < 3) continue;
+
+        const getVal = (headerName: string) => {
+          const index = headers.indexOf(headerName);
+          return index !== -1 ? values[index] : '';
+        };
 
         const record: ShiftRecord = {
           id: crypto.randomUUID(),
           userId: user.uid,
           periodId: selectedPeriodId,
-          date: values[headers.indexOf('Fecha')],
-          startTime: values[headers.indexOf('Inicio')],
-          endTime: values[headers.indexOf('Fin')],
+          date: getVal('Fecha'),
+          startTime: getVal('Inicio'),
+          endTime: getVal('Fin'),
           hours: {
-            day: Number(values[headers.indexOf('Horas Diu')] || 0),
-            night: Number(values[headers.indexOf('Horas Noc')] || 0),
-            holidayDay: Number(values[headers.indexOf('Horas F-Diu')] || 0),
-            holidayNight: Number(values[headers.indexOf('Horas F-Noc')] || 0),
+            day: Number(getVal('Horas Diu') || 0),
+            night: Number(getVal('Horas Noc') || 0),
+            holidayDay: Number(getVal('Horas F-Diu') || 0),
+            holidayNight: Number(getVal('Horas F-Noc') || 0),
           },
           ava: {
-            day: Number(values[headers.indexOf('AVA Diu')] || 0),
-            night: Number(values[headers.indexOf('AVA Noc')] || 0),
-            holidayDay: Number(values[headers.indexOf('AVA F-Diu')] || 0),
-            holidayNight: Number(values[headers.indexOf('AVA F-Noc')] || 0),
+            day: Number(getVal('AVA Diu') || 0),
+            night: Number(getVal('AVA Noc') || 0),
+            holidayDay: Number(getVal('AVA F-Diu') || 0),
+            holidayNight: Number(getVal('AVA F-Noc') || 0),
           },
           patients: {
-            day: Number(values[headers.indexOf('Pac Diu')] || 0),
-            night: Number(values[headers.indexOf('Pac Noc')] || 0),
-            holidayDay: Number(values[headers.indexOf('Pac F-Diu')] || 0),
-            holidayNight: Number(values[headers.indexOf('Pac F-Noc')] || 0),
+            day: Number(getVal('Pac Diu') || 0),
+            night: Number(getVal('Pac Noc') || 0),
+            holidayDay: Number(getVal('Pac F-Diu') || 0),
+            holidayNight: Number(getVal('Pac F-Noc') || 0),
           },
           applyPatients: true,
-          isDefinitive: values[headers.indexOf('Estado')] === 'Definitivo',
+          isDefinitive: getVal('Estado') === 'Definitivo',
         };
-        recordsToImport.push(record);
+
+        if (record.date && record.startTime && record.endTime) {
+          recordsToImport.push(record);
+        }
       }
 
       if (recordsToImport.length > 0) {
@@ -824,6 +863,8 @@ function MainApp() {
       }
     };
     reader.readAsText(file);
+    // Reset input to allow re-importing the same file if needed
+    event.target.value = '';
   };
 
   const toggleRecordStatus = async (id: string) => {
@@ -1134,7 +1175,8 @@ function MainApp() {
     const totalMonthlyPatients = patientsBreakdown.day + patientsBreakdown.night + patientsBreakdown.holidayDay + patientsBreakdown.holidayNight;
 
     const gross = totalH + totalP + totalAVA;
-    const ibc = gross;
+    // IBC is capped at 25 SMMLV and should be at least 1 SMMLV if there is income
+    const ibc = gross > 0 ? Math.max(Math.min(gross, SMMLV_2026 * 25), SMMLV_2026) : 0;
 
     const health = ibc * 0.04;
     const pension = ibc * 0.04;
@@ -1455,9 +1497,18 @@ function MainApp() {
             </section>
 
             <section>
-              <div className="flex items-center gap-2 mb-4 text-indigo-600">
-                <Settings className="w-4 h-4" />
-                <h2 className="text-sm font-bold uppercase tracking-widest">Valores de Contrato</h2>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2 text-indigo-600">
+                  <Settings className="w-4 h-4" />
+                  <h2 className="text-sm font-bold uppercase tracking-widest">Valores de Contrato</h2>
+                </div>
+                <button 
+                  onClick={applyRateAdjustment}
+                  className="px-3 py-1.5 bg-amber-100 text-amber-700 text-[10px] font-bold rounded-lg hover:bg-amber-200 transition-all flex items-center gap-2 border border-amber-200"
+                >
+                  <TrendingUp className="w-3 h-3" />
+                  Aplicar +6.1% (Ajuste 2026)
+                </button>
               </div>
               <p className="text-xs text-slate-500 mb-6 leading-relaxed">Configura las tarifas acordadas por hora y por paciente según tu contrato.</p>
 
@@ -2456,12 +2507,16 @@ function MainApp() {
                     </div>
                     <p className="text-3xl font-bold text-emerald-800">{formatCurrency(results.totalGross)}</p>
                   </div>
-                  <div className="bg-rose-50 p-6 rounded-3xl border border-rose-100 space-y-2">
+                <div className="bg-rose-50 p-6 rounded-3xl border border-rose-100 space-y-2">
                     <div className="flex items-center gap-2 text-rose-700">
                       <TrendingDown className="w-4 h-4" />
                       <span className="text-[10px] font-bold uppercase tracking-widest">Total Deducciones</span>
                     </div>
                     <p className="text-3xl font-bold text-rose-800">{formatCurrency(results.totalDeductions)}</p>
+                    <div className="flex items-center gap-4 text-[9px] font-bold text-rose-400 uppercase tracking-widest pt-1">
+                      <span>Legales: {formatCurrency(results.legalDeductions)}</span>
+                      <span>Otras: {formatCurrency(results.additionalDeductions)}</span>
+                    </div>
                   </div>
                   <div className="bg-indigo-600 p-6 rounded-3xl text-white space-y-2 shadow-xl shadow-indigo-100">
                     <div className="flex items-center gap-2 opacity-80">
