@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
   Calculator, 
   Stethoscope, 
@@ -52,6 +52,7 @@ import {
   collection, 
   doc, 
   setDoc, 
+  getDoc,
   onSnapshot, 
   deleteDoc, 
   updateDoc, 
@@ -299,6 +300,11 @@ function MainApp() {
 
   // --- State ---
   const [rates, setRates] = useState<Rates>(DEFAULT_RATES);
+  const ratesRef = useRef<Rates>(rates);
+  useEffect(() => {
+    ratesRef.current = rates;
+  }, [rates]);
+
   const [shift, setShift] = useState<ShiftInput>({
     date: new Date().toISOString().split('T')[0],
     startTime: '07:00',
@@ -369,6 +375,59 @@ function MainApp() {
   };
 
   // --- Firestore Sync ---
+  // --- Rates Sync ---
+  useEffect(() => {
+    if (!isAuthReady || !user) {
+      setRates(DEFAULT_RATES);
+      return;
+    }
+
+    const userPath = `users/${user.uid}`;
+    const unsubscribeUser = onSnapshot(doc(db, userPath), (snapshot) => {
+      if (snapshot.exists()) {
+        const userData = snapshot.data();
+        if (userData.rates) {
+          // Only update if different to avoid loops
+          if (JSON.stringify(userData.rates) !== JSON.stringify(ratesRef.current)) {
+            setRates(userData.rates);
+          }
+        }
+      } else {
+        // Create user document if it doesn't exist
+        const newUser = {
+          uid: user.uid,
+          email: user.email,
+          displayName: user.displayName,
+          photoURL: user.photoURL,
+          createdAt: new Date().toISOString(),
+          rates: DEFAULT_RATES
+        };
+        setDoc(doc(db, userPath), newUser).catch(err => 
+          handleFirestoreError(err, OperationType.CREATE, userPath)
+        );
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, userPath);
+    });
+
+    return () => unsubscribeUser();
+  }, [isAuthReady, user]);
+
+  // Save rates whenever they change locally
+  useEffect(() => {
+    if (!isAuthReady || !user) return;
+
+    const userPath = `users/${user.uid}`;
+    // We use a timeout to debounce updates to Firestore
+    const timeout = setTimeout(() => {
+      updateDoc(doc(db, userPath), { rates }).catch(err => 
+        handleFirestoreError(err, OperationType.UPDATE, userPath)
+      );
+    }, 1000);
+
+    return () => clearTimeout(timeout);
+  }, [rates, user, isAuthReady]);
+
   useEffect(() => {
     if (!isAuthReady || !user) {
       setRecords([]);

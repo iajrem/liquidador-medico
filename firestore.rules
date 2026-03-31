@@ -89,7 +89,8 @@ service cloud.firestore {
       return data.uid is string && data.uid.size() > 0 && data.uid.size() < 128 &&
              data.email is string && isValidEmail(data.email) &&
              (!('displayName' in data) || (data.displayName is string && data.displayName.size() < 100)) &&
-             (!('photoURL' in data) || isValidUrl(data.photoURL));
+             (!('photoURL' in data) || isValidUrl(data.photoURL)) &&
+             (!('rates' in data) || data.rates is map);
     }
 
     function isValidRecord(data) {
