@@ -237,7 +237,7 @@ const DEFAULT_RATES: Rates = {
     day: 23339.04,
     night: 31509.33,
     holidayDay: 40845.85,
-    holidayNight: 49011.83,
+    holidayNight: 49012.90,
   },
   ava: {
     day: 37710.01,
@@ -249,7 +249,7 @@ const DEFAULT_RATES: Rates = {
     day: 10826.13,
     night: 14616.61,
     holidayDay: 18945.71,
-    holidayNight: 22732.99,
+    holidayNight: 22735.11,
   },
   payroll: {
     uvtValue: 49786, // Estimated for 2026
@@ -351,22 +351,28 @@ function MainApp() {
       console.log("Calling signInWithGoogle...");
       const result = await signInWithGoogle();
       console.log("Login successful:", result.user.uid);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Detailed Login error:", error);
       let message = "Error al iniciar sesión. Por favor, intenta de nuevo.";
-      if (error instanceof Error) {
-        console.log("Error name:", error.name);
-        console.log("Error message:", error.message);
-        if (error.message.includes('popup-blocked')) {
-          message = "El navegador bloqueó la ventana emergente. Por favor, permite las ventanas emergentes para este sitio.";
-        } else if (error.message.includes('auth/unauthorized-domain')) {
-          message = "Este dominio no está autorizado en la consola de Firebase. Por favor, contacta al administrador.";
-        } else if (error.message.includes('auth/cancelled-popup-request')) {
-          message = "La ventana de inicio de sesión se cerró antes de completar el proceso.";
-        } else {
-          message = `Error técnico: ${error.message}`;
-        }
+      
+      const errorCode = error.code || "";
+      const errorMessage = error.message || "";
+      const currentDomain = window.location.hostname;
+
+      if (errorCode === 'auth/popup-blocked') {
+        message = "El navegador bloqueó la ventana emergente. Por favor, permite las ventanas emergentes para este sitio.";
+      } else if (errorCode === 'auth/unauthorized-domain' || errorMessage.includes('auth/unauthorized-domain')) {
+        message = `Este dominio (${currentDomain}) no está autorizado en la consola de Firebase. Por favor, agrégalo a la lista de dominios autorizados en la configuración de Firebase Auth.`;
+      } else if (errorCode === 'auth/cancelled-popup-request' || errorCode === 'auth/popup-closed-by-user') {
+        message = "La ventana de inicio de sesión se cerró antes de completar el proceso.";
+      } else if (errorCode === 'auth/network-request-failed') {
+        message = "Error de red. Por favor, verifica tu conexión a internet.";
+      } else if (errorCode === 'auth/internal-error') {
+        message = "Error interno de Firebase. Por favor, intenta de nuevo más tarde.";
+      } else {
+        message = `Error técnico (${errorCode || 'unknown'}): ${errorMessage}`;
       }
+      
       setAuthError(message);
     } finally {
       setIsLoggingIn(false);
@@ -614,33 +620,6 @@ function MainApp() {
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, path);
     }
-  };
-
-  const applyRateAdjustment = () => {
-    const factor = 1.061;
-    const newRates = {
-      ...rates,
-      hourly: {
-        day: Number((rates.hourly.day * factor).toFixed(2)),
-        night: Number((rates.hourly.night * factor).toFixed(2)),
-        holidayDay: Number((rates.hourly.holidayDay * factor).toFixed(2)),
-        holidayNight: Number((rates.hourly.holidayNight * factor).toFixed(2)),
-      },
-      ava: {
-        day: Number((rates.ava.day * factor).toFixed(2)),
-        night: Number((rates.ava.night * factor).toFixed(2)),
-        holidayDay: Number((rates.ava.holidayDay * factor).toFixed(2)),
-        holidayNight: Number((rates.ava.holidayNight * factor).toFixed(2)),
-      },
-      patient: {
-        day: Number((rates.patient.day * factor).toFixed(2)),
-        night: Number((rates.patient.night * factor).toFixed(2)),
-        holidayDay: Number((rates.patient.holidayDay * factor).toFixed(2)),
-        holidayNight: Number((rates.patient.holidayNight * factor).toFixed(2)),
-      }
-    };
-    setRates(newRates);
-    alert('Se ha aplicado un aumento del 6.1% a todas las tarifas.');
   };
 
   const addRecord = async () => {
@@ -1497,18 +1476,9 @@ function MainApp() {
             </section>
 
             <section>
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2 text-indigo-600">
-                  <Settings className="w-4 h-4" />
-                  <h2 className="text-sm font-bold uppercase tracking-widest">Valores de Contrato</h2>
-                </div>
-                <button 
-                  onClick={applyRateAdjustment}
-                  className="px-3 py-1.5 bg-amber-100 text-amber-700 text-[10px] font-bold rounded-lg hover:bg-amber-200 transition-all flex items-center gap-2 border border-amber-200"
-                >
-                  <TrendingUp className="w-3 h-3" />
-                  Aplicar +6.1% (Ajuste 2026)
-                </button>
+              <div className="flex items-center gap-2 mb-4 text-indigo-600">
+                <Settings className="w-4 h-4" />
+                <h2 className="text-sm font-bold uppercase tracking-widest">Valores de Contrato</h2>
               </div>
               <p className="text-xs text-slate-500 mb-6 leading-relaxed">Configura las tarifas acordadas por hora y por paciente según tu contrato.</p>
 
