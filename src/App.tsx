@@ -754,12 +754,15 @@ function MainApp() {
     try {
       // Archive current active period if any
       if (activePeriod && activePeriod.id !== id) {
-        await updateDoc(doc(db, `users/${user.uid}/periods/${activePeriod.id}`), { status: 'archived' });
+        await updateDoc(doc(db, `users/${user.uid}/periods/${activePeriod.id}`), { 
+          status: 'archived',
+          totalGross: results.gross 
+        });
       }
       // Reactivate target period
       await updateDoc(doc(db, `users/${user.uid}/periods/${id}`), { status: 'active' });
       setSelectedPeriodId(id);
-      alert('Periodo reactivado con éxito.');
+      alert('Periodo reactivado con éxito. El periodo anterior ha sido archivado.');
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}/periods/${id}`);
     }
@@ -901,11 +904,13 @@ function MainApp() {
     // Totals Summary Table
     autoTable(doc, {
       startY: 75,
-      head: [['Concepto', 'Valor']],
+      head: [['Concepto', 'Cantidad/Detalle', 'Valor']],
       body: [
-        ['Total Devengado', formatCurrency(results.totalGross)],
-        ['Total Deducciones', formatCurrency(results.totalDeductions)],
-        ['Neto a Recibir', formatCurrency(results.net)],
+        ['Horas Totales (Reg + AVA)', results.totalMonthlyHours.toFixed(2), ''],
+        ['Pacientes Atendidos', results.totalMonthlyPatients.toString(), ''],
+        ['Total Devengado Bruto', '', formatCurrency(results.totalGross)],
+        ['Total Deducciones', '', formatCurrency(results.totalDeductions)],
+        ['Neto a Recibir', '', formatCurrency(results.net)],
       ],
       theme: 'striped',
       headStyles: { fillColor: [79, 70, 229] },
@@ -913,17 +918,18 @@ function MainApp() {
 
     // Income Breakdown Table
     doc.setFontSize(14);
-    doc.text('Detalle de Ingresos', 14, (doc as any).lastAutoTable.finalY + 15);
+    doc.text('Detalle de Ingresos (Salarial)', 14, (doc as any).lastAutoTable.finalY + 15);
     
     autoTable(doc, {
       startY: (doc as any).lastAutoTable.finalY + 20,
-      head: [['Descripción', 'Valor']],
+      head: [['Descripción', 'Horas/Cant', 'Valor']],
       body: [
-        ['Sueldo Básico (Turnos)', formatCurrency(results.gross)],
-        ['Prima Proporcional', formatCurrency(results.primaProporcional)],
-        ['Cesantías Proporcionales', formatCurrency(results.cesantiasProporcional)],
-        ['Intereses Cesantías', formatCurrency(results.interesesCesantias)],
-        ['Vacaciones Proporcionales', formatCurrency(results.vacacionesProporcional)],
+        ['Sueldo Básico (Turnos Regulares)', (results.totalH / (rates.hourly.day || 1)).toFixed(1), formatCurrency(results.totalH)],
+        ['Horas AVA', (results.totalAVA / (rates.ava.day || 1)).toFixed(1), formatCurrency(results.totalAVA)],
+        ['Prima Proporcional', '-', formatCurrency(results.primaProporcional)],
+        ['Cesantías Proporcionales', '-', formatCurrency(results.cesantiasProporcional)],
+        ['Intereses Cesantías', '-', formatCurrency(results.interesesCesantias)],
+        ['Vacaciones Proporcionales', '-', formatCurrency(results.vacacionesProporcional)],
       ],
       theme: 'grid',
       headStyles: { fillColor: [16, 185, 129] }, // Emerald-500
@@ -1158,11 +1164,15 @@ function MainApp() {
       }
     });
 
-    const totalMonthlyHours = hoursBreakdown.day + hoursBreakdown.night + hoursBreakdown.holidayDay + hoursBreakdown.holidayNight;
+    const totalMonthlyHours = 
+      (hoursBreakdown.day + hoursBreakdown.night + hoursBreakdown.holidayDay + hoursBreakdown.holidayNight) +
+      (avaBreakdown.day + avaBreakdown.night + avaBreakdown.holidayDay + avaBreakdown.holidayNight);
     const totalMonthlyAVA = avaBreakdown.day + avaBreakdown.night + avaBreakdown.holidayDay + avaBreakdown.holidayNight;
     const totalMonthlyPatients = patientsBreakdown.day + patientsBreakdown.night + patientsBreakdown.holidayDay + patientsBreakdown.holidayNight;
 
-    const gross = totalH + totalP + totalAVA;
+    // Gross calculation: Regular Hours + AVA Hours. 
+    // Patients are considered "included" in the hourly rate for regular shifts as per user feedback.
+    const gross = totalH + totalAVA;
     // IBC is capped at 25 SMMLV and should be at least 1 SMMLV if there is income
     const ibc = gross > 0 ? Math.max(Math.min(gross, SMMLV_2026 * 25), SMMLV_2026) : 0;
 
@@ -1289,6 +1299,23 @@ function MainApp() {
       monthlyHours
     };
   }, [records, rates, additionalDeductions, viewingArchive, shift, quantities, editingId, user, selectedPeriodId]);
+
+  // Auto-update period totalGross in Firestore when results change
+  useEffect(() => {
+    if (!user || !selectedPeriodId || viewingArchive) return;
+    
+    const timeout = setTimeout(async () => {
+      const path = `users/${user.uid}/periods/${selectedPeriodId}`;
+      try {
+        await updateDoc(doc(db, path), { totalGross: results.gross });
+      } catch (error) {
+        // Silent error for auto-updates to avoid annoying the user
+        console.error('Auto-update period totalGross failed', error);
+      }
+    }, 2000); // Debounce for 2 seconds
+
+    return () => clearTimeout(timeout);
+  }, [results.gross, user, selectedPeriodId, viewingArchive]);
 
   if (!isAuthReady) {
     return (
