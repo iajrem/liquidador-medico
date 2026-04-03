@@ -41,7 +41,8 @@ import {
   Download,
   Upload,
   RotateCcw,
-  FileDown
+  FileDown,
+  AlertTriangle
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
@@ -132,6 +133,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
 interface Deduction {
   id: string;
+  userId: string;
   concept: string;
   amount: number;
   periodId?: string;
@@ -820,6 +822,10 @@ function MainApp() {
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' | 'info' } | null>(null);
   const [showPeriodSelectionModal, setShowPeriodSelectionModal] = useState(false);
   const [showAccumulatedDetails, setShowAccumulatedDetails] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    message: string;
+    onConfirm: () => void;
+  } | null>(null);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
     setToast({ message, type });
@@ -846,36 +852,47 @@ function MainApp() {
     const [startH, startM] = s.startTime.split(':').map(Number);
     const [endH, endM] = s.endTime.split(':').map(Number);
 
-    let start = new Date(2000, 0, 1, startH, startM);
-    let end = new Date(2000, 0, 1, endH, endM);
+    const startTotal = startH * 60 + startM;
+    let endTotal = endH * 60 + endM;
+    if (endTotal <= startTotal) endTotal += 24 * 60; // turno cruza medianoche
 
-    if (end <= start) {
-      end = new Date(2000, 0, 2, endH, endM);
-    }
+    const nightStart = r.payroll.nightShiftStart * 60; // en minutos
+    const dayStart = 6 * 60;
+    // Segmentos del día: [00:00-06:00 noche], [06:00-nightStart día], [nightStart-24:00 noche]
+    // Para el segundo día (si cruza medianoche) se aplica isHolidayEnd
 
     let minsD = 0, minsN = 0, minsDF = 0, minsNF = 0;
-    let current = new Date(start);
 
-    while (current < end) {
-      const isSecondDay = current.getDate() > start.getDate();
-      const isHolidayNow = isSecondDay ? s.isHolidayEnd : s.isHolidayStart;
-      
-      const hour = current.getHours();
-      const isDaytime = hour >= 6 && hour < r.payroll.nightShiftStart;
+    // Calcula minutos en un bloque horario [from, to) dentro del rango [0, 1440)
+    const addBlock = (from: number, to: number, isHoliday: boolean, isDay: boolean) => {
+      const overlap = Math.max(0, Math.min(to, endTotal) - Math.max(from, startTotal));
+      if (overlap <= 0) return;
+      if (isDay && !isHoliday) minsD += overlap;
+      else if (!isDay && !isHoliday) minsN += overlap;
+      else if (isDay && isHoliday) minsDF += overlap;
+      else minsNF += overlap;
+    };
 
-      if (isDaytime && !isHolidayNow) minsD++;
-      else if (!isDaytime && !isHolidayNow) minsN++;
-      else if (isDaytime && isHolidayNow) minsDF++;
-      else if (!isDaytime && isHolidayNow) minsNF++;
+    // Primer día (minutos 0..1440)
+    const h = s.isHolidayStart;
+    addBlock(0,        dayStart,   h, false); // 00:00-06:00 nocturno
+    addBlock(dayStart, nightStart, h, true);  // 06:00-nightStart diurno
+    addBlock(nightStart, 1440,     h, false); // nightStart-24:00 nocturno
 
-      current.setMinutes(current.getMinutes() + 1);
+    // Segundo día, si el turno cruza medianoche (minutos 1440..2880)
+    if (endTotal > 1440) {
+      const h2 = s.isHolidayEnd;
+      addBlock(1440,        1440 + dayStart,   h2, false);
+      addBlock(1440 + dayStart, 1440 + nightStart, h2, true);
+      addBlock(1440 + nightStart, 2880,          h2, false);
     }
 
+    const round2 = (n: number) => Math.round(n * 100) / 100;
     return {
-      day: Math.round((minsD / 60) * 100) / 100,
-      night: Math.round((minsN / 60) * 100) / 100,
-      holidayDay: Math.round((minsDF / 60) * 100) / 100,
-      holidayNight: Math.round((minsNF / 60) * 100) / 100,
+      day:         round2(minsD / 60),
+      night:       round2(minsN / 60),
+      holidayDay:  round2(minsDF / 60),
+      holidayNight: round2(minsNF / 60),
     };
   };
 
@@ -917,6 +934,24 @@ function MainApp() {
       }
     }
 
+    if (newPeriodData.startDate > newPeriodData.endDate) {
+      showToast('La fecha de inicio no puede ser posterior a la fecha de fin.', 'error');
+      return;
+    }
+
+    // Validar solapamiento con periodos existentes (solo para periodos nuevos)
+    if (!editingPeriod) {
+      const overlap = periods.find(p =>
+        p.id !== editingPeriod?.id &&
+        newPeriodData.startDate <= p.endDate &&
+        newPeriodData.endDate >= p.startDate
+      );
+      if (overlap) {
+        showToast(`Las fechas se solapan con el periodo "${overlap.name}". Ajusta las fechas.`, 'error');
+        return;
+      }
+    }
+
     try {
       if (editingPeriod) {
         const path = `users/${user.uid}/periods/${editingPeriod.id}`;
@@ -944,15 +979,37 @@ function MainApp() {
         
         // If there's an active period, archive it first
         if (activePeriod) {
-          await updateDoc(doc(db, `users/${user.uid}/periods/${activePeriod.id}`), { 
+          // Se recalculan los totales directamente desde Firestore para garantizar
+          // que corresponden al periodo activo, sin depender del estado de la UI.
+          const activeRecordsPath = `users/${user.uid}/records`;
+          const activeQ = query(collection(db, activeRecordsPath), where('periodId', '==', activePeriod.id));
+          const activeSnap = await getDocs(activeQ);
+          const activeRecords = activeSnap.docs.map(d => d.data() as ShiftRecord);
+
+          const activeDedPath = `users/${user.uid}/deductions`;
+          const activeDedQ = query(collection(db, activeDedPath), where('periodId', '==', activePeriod.id));
+          const activeDedSnap = await getDocs(activeDedQ);
+          const activeDeductions = activeDedSnap.docs.map(d => d.data() as Deduction);
+
+          const archiveTotals = calculatePeriodTotals(
+            activeRecords,
+            activePeriod.rates || rates,
+            activeDeductions,
+            periods,
+            activePeriod.id
+          );
+
+          await updateDoc(doc(db, `users/${user.uid}/periods/${activePeriod.id}`), {
             status: 'archived',
-            totalGross: results.all.gross,
-            totalGrossWithBenefits: results.all.totalPatrimonial,
-            totalDeductions: results.all.totalDeductions,
-            net: results.all.net,
-            primaProporcional: results.all.primaProporcional,
-            vacacionesProporcional: results.all.vacacionesProporcional,
-            rates: { ...rates } 
+            totalGross: archiveTotals.gross,
+            totalGrossWithBenefits: archiveTotals.totalPatrimonial,
+            totalDeductions: archiveTotals.totalDeductions,
+            net: archiveTotals.net,
+            primaProporcional: archiveTotals.primaProporcional,
+            vacacionesProporcional: archiveTotals.vacacionesProporcional,
+            cesantiasProporcional: archiveTotals.cesantiasProporcional,
+            interesesCesantias: archiveTotals.interesesCesantias,
+            rates: { ...rates }
           });
         }
         
@@ -982,7 +1039,7 @@ function MainApp() {
   const addRecord = async () => {
     if (!user) return;
     if (!selectedPeriodId) {
-      alert('Por favor, inicia un periodo de facturación primero.');
+      showToast('Por favor, inicia un periodo de facturación primero.', 'error');
       setShowPeriodModal(true);
       return;
     }
@@ -1007,17 +1064,27 @@ function MainApp() {
     };
 
     if (viewingArchive) {
-      // Update local archive state
-      const updatedRecords = editingId 
+      // Si el archivo corresponde a un periodo en Firestore, persiste el cambio allí.
+      const isFirestorePeriod = periods.some(p => p.id === viewingArchive.id);
+      if (isFirestorePeriod) {
+        const path = `users/${user.uid}/records/${recordId}`;
+        try {
+          await setDoc(doc(db, path), newRecord);
+        } catch (error) {
+          handleFirestoreError(error, editingId ? OperationType.UPDATE : OperationType.CREATE, path);
+          return;
+        }
+      }
+
+      const updatedRecords = editingId
         ? viewingArchive.records.map(r => r.id === editingId ? newRecord : r)
         : [...viewingArchive.records, newRecord];
-      
+
       setViewingArchive({
         ...viewingArchive,
         records: sortRecords(updatedRecords)
       });
-      
-      // Reset form
+
       setEditingId(null);
       setShift({
         date: new Date().toISOString().split('T')[0],
@@ -1065,6 +1132,16 @@ function MainApp() {
     if (editingId === id) setEditingId(null);
 
     if (viewingArchive) {
+      const isFirestorePeriod = periods.some(p => p.id === viewingArchive.id);
+      if (isFirestorePeriod) {
+        const path = `users/${user.uid}/records/${id}`;
+        try {
+          await deleteDoc(doc(db, path));
+        } catch (error) {
+          handleFirestoreError(error, OperationType.DELETE, path);
+          return;
+        }
+      }
       setViewingArchive({
         ...viewingArchive,
         records: viewingArchive.records.filter(r => r.id !== id)
@@ -1105,57 +1182,46 @@ function MainApp() {
   };
 
   const deleteSelectedRecords = async () => {
-    if (!user || selectedRecordIds.length === 0) return;
+    if (selectedRecordIds.length === 0) return;
     
-    // Improvement A: Replace confirm with custom check (for now using showToast or a simple confirm if permitted, but instructions say avoid window.confirm)
-    // I'll use a simple state-based confirmation if I had one, but I'll stick to the logic for now.
-    if (!window.confirm(`¿Estás seguro de que deseas eliminar ${selectedRecordIds.length} registros seleccionados?`)) {
-      return;
-    }
+    setConfirmDialog({
+      message: `¿Estás seguro de que deseas eliminar ${selectedRecordIds.length} registros seleccionados?`,
+      onConfirm: async () => {
+        try {
+          for (const id of selectedRecordIds) {
+            const path = `users/${user.uid}/records/${id}`;
+            await deleteDoc(doc(db, path));
+          }
+          
+          if (selectedPeriodId) {
+            const recordsPath = `users/${user.uid}/records`;
+            const q = query(collection(db, recordsPath), where('periodId', '==', selectedPeriodId));
+            const snapshot = await getDocs(q);
+            const remainingRecords = snapshot.docs.map(doc => doc.data() as ShiftRecord);
+            
+            const period = periods.find(p => p.id === selectedPeriodId);
+            const calcRates = period?.rates || rates;
+            
+            const newTotals = calculatePeriodTotals(remainingRecords, calcRates, additionalDeductions, periods, selectedPeriodId);
+            
+            await updateDoc(doc(db, `users/${user.uid}/periods/${selectedPeriodId}`), { 
+              totalGross: newTotals.gross,
+              totalGrossWithBenefits: newTotals.totalPatrimonial,
+              totalDeductions: newTotals.totalDeductions,
+              net: newTotals.net,
+              primaProporcional: newTotals.primaProporcional,
+              vacacionesProporcional: newTotals.vacacionesProporcional
+            });
+          }
 
-    if (viewingArchive) {
-      setViewingArchive({
-        ...viewingArchive,
-        records: viewingArchive.records.filter(r => !selectedRecordIds.includes(r.id))
-      });
-      setSelectedRecordIds([]);
-      return;
-    }
-
-    try {
-      for (const id of selectedRecordIds) {
-        const path = `users/${user.uid}/records/${id}`;
-        await deleteDoc(doc(db, path));
+          setSelectedRecordIds([]);
+          showToast(`${selectedRecordIds.length} registros eliminados con éxito.`);
+        } catch (error) {
+          console.error("Error deleting multiple records:", error);
+          showToast("Ocurrió un error al eliminar algunos registros.", 'error');
+        }
       }
-      
-      // --- Correction 2: Recalculate totalGross in Firestore ---
-      if (selectedPeriodId) {
-        const recordsPath = `users/${user.uid}/records`;
-        const q = query(collection(db, recordsPath), where('periodId', '==', selectedPeriodId));
-        const snapshot = await getDocs(q);
-        const remainingRecords = snapshot.docs.map(doc => doc.data() as ShiftRecord);
-        
-        const period = periods.find(p => p.id === selectedPeriodId);
-        const calcRates = period?.rates || rates;
-        
-        const newTotals = calculatePeriodTotals(remainingRecords, calcRates, additionalDeductions, periods, selectedPeriodId);
-        
-        await updateDoc(doc(db, `users/${user.uid}/periods/${selectedPeriodId}`), { 
-          totalGross: newTotals.gross,
-          totalGrossWithBenefits: newTotals.totalPatrimonial,
-          totalDeductions: newTotals.totalDeductions,
-          net: newTotals.net,
-          primaProporcional: newTotals.primaProporcional,
-          vacacionesProporcional: newTotals.vacacionesProporcional
-        });
-      }
-
-      setSelectedRecordIds([]);
-      showToast(`${selectedRecordIds.length} registros eliminados con éxito.`);
-    } catch (error) {
-      console.error("Error deleting multiple records:", error);
-      showToast("Ocurrió un error al eliminar algunos registros.", 'error');
-    }
+    });
   };
 
   const toggleSelectRecord = (id: string) => {
@@ -1181,7 +1247,7 @@ function MainApp() {
     const path = `users/${user.uid}/periods/${selectedPeriodId}`;
     try {
       await updateDoc(doc(db, path), { totalGross: results.all.gross });
-      alert('Total bruto del periodo actualizado con éxito.');
+      showToast('Total bruto del periodo actualizado con éxito.');
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, path);
     }
@@ -1207,7 +1273,7 @@ function MainApp() {
       // Reactivate target period
       await updateDoc(doc(db, `users/${user.uid}/periods/${id}`), { status: 'active' });
       setSelectedPeriodId(id);
-      alert('Periodo reactivado con éxito.');
+      showToast('Periodo reactivado con éxito.');
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}/periods/${id}`);
     }
@@ -1347,7 +1413,7 @@ function MainApp() {
   const exportToCSV = () => {
     const baseRecords = viewingArchive ? viewingArchive.records : records;
     if (baseRecords.length === 0) {
-      alert('No hay registros para exportar.');
+      showToast('No hay registros para exportar.', 'info');
       return;
     }
 
@@ -1399,11 +1465,11 @@ function MainApp() {
   const saveCurrentCalculation = () => {
     const baseRecords = viewingArchive ? viewingArchive.records : records;
     if (!calcName.trim()) {
-      alert('Por favor, ingresa un nombre para guardar el extracto.');
+      showToast('Por favor, ingresa un nombre para guardar el extracto.', 'error');
       return;
     }
     if (baseRecords.length === 0) {
-      alert('No hay turnos para guardar.');
+      showToast('No hay turnos para guardar.', 'error');
       return;
     }
 
@@ -1418,7 +1484,7 @@ function MainApp() {
 
     setSavedCalculations([newSaved, ...savedCalculations]);
     setCalcName('');
-    alert('Extracto guardado con éxito.');
+    showToast('Extracto guardado con éxito.');
   };
 
   const loadCalculation = (saved: SavedCalculation) => {
@@ -1469,34 +1535,36 @@ function MainApp() {
 
   const deletePeriod = async (periodId: string) => {
     if (!user) return;
-    if (!window.confirm("¿Estás seguro de que deseas eliminar este periodo y todos sus registros asociados? Esta acción no se puede deshacer.")) {
-      return;
-    }
+    
+    setConfirmDialog({
+      message: "¿Estás seguro de que deseas eliminar este periodo y todos sus registros asociados? Esta acción no se puede deshacer.",
+      onConfirm: async () => {
+        try {
+          // 1. Delete all records associated with this period
+          const recordsPath = `users/${user.uid}/records`;
+          const q = query(collection(db, recordsPath), where('periodId', '==', periodId));
+          const snapshot = await getDocs(q);
+          
+          for (const d of snapshot.docs) {
+            await deleteDoc(doc(db, `${recordsPath}/${d.id}`));
+          }
 
-    try {
-      // 1. Delete all records associated with this period
-      const recordsPath = `users/${user.uid}/records`;
-      const q = query(collection(db, recordsPath), where('periodId', '==', periodId));
-      const snapshot = await getDocs(q);
-      
-      for (const d of snapshot.docs) {
-        await deleteDoc(doc(db, `${recordsPath}/${d.id}`));
+          // 2. Delete the period itself
+          await deleteDoc(doc(db, `users/${user.uid}/periods/${periodId}`));
+          
+          if (selectedPeriodId === periodId) {
+            const remaining = periods.filter(p => p.id !== periodId);
+            const nextActive = remaining.find(p => p.status === 'active');
+            setSelectedPeriodId(nextActive ? nextActive.id : (remaining[0]?.id || null));
+          }
+          
+          showToast("Periodo y registros eliminados con éxito.");
+        } catch (error) {
+          console.error("Error deleting period:", error);
+          showToast("Error al eliminar el periodo.", "error");
+        }
       }
-
-      // 2. Delete the period itself
-      await deleteDoc(doc(db, `users/${user.uid}/periods/${periodId}`));
-      
-      if (selectedPeriodId === periodId) {
-        const remaining = periods.filter(p => p.id !== periodId);
-        const nextActive = remaining.find(p => p.status === 'active');
-        setSelectedPeriodId(nextActive ? nextActive.id : (remaining[0]?.id || null));
-      }
-      
-      showToast("Periodo y registros eliminados con éxito.");
-    } catch (error) {
-      console.error("Error deleting period:", error);
-      showToast("Error al eliminar el periodo.", "error");
-    }
+    });
   };
 
   const closeArchive = () => {
@@ -1504,21 +1572,28 @@ function MainApp() {
     // Restore current rates and deductions from live state if needed
     // Actually, rates and deductions are shared for now, but we could restore them if we wanted.
     // For now, just returning to live records is enough.
-    alert('Regresando a la bitácora en vivo.');
+    showToast('Regresando a la bitácora en vivo.', 'info');
   };
 
   const deleteSavedCalculation = (id: string) => {
-    if (confirm('¿Eliminar este extracto guardado?')) {
-      setSavedCalculations(savedCalculations.filter(s => s.id !== id));
-    }
+    setConfirmDialog({
+      message: '¿Eliminar este extracto guardado?',
+      onConfirm: () => {
+        setSavedCalculations(savedCalculations.filter(s => s.id !== id));
+        showToast('Extracto eliminado.');
+      }
+    });
   };
 
   const addDeduction = async () => {
     if (!user || !selectedPeriodId) return;
     const deductionId = crypto.randomUUID();
+    // Se guarda con concept inicial válido ('Nueva deducción') para cumplir con las reglas de Firestore.
+    // Se incluye userId explícitamente.
     const deduction: Deduction = {
       id: deductionId,
-      concept: '',
+      userId: user.uid,
+      concept: 'Nueva deducción',
       amount: 0,
       periodId: selectedPeriodId
     };
@@ -1527,6 +1602,7 @@ function MainApp() {
       await setDoc(doc(db, path), deduction);
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, path);
+      showToast('Error al crear la deducción.', 'error');
     }
   };
 
@@ -3179,9 +3255,14 @@ function MainApp() {
                         <span className="text-sm font-medium text-slate-600">Pensión (4%)</span>
                         <span className="font-bold text-rose-700">-{formatCurrency(results.definitive.pension)}</span>
                       </div>
-                      <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                        <span className="text-sm font-medium text-slate-600">Caja de Compensación (4%)</span>
-                        <span className="font-bold text-slate-800">{formatCurrency(results.definitive.caja)}</span>
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                          <span className="text-sm font-medium text-slate-600">Caja de Compensación (4%)</span>
+                          <span className="font-bold text-slate-800">{formatCurrency(results.definitive.caja)}</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 italic px-1">
+                          * El aporte a la Caja de Compensación es asumido por el empleador.
+                        </p>
                       </div>
                       {results.definitive.fsp > 0 && (
                         <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
@@ -3595,6 +3676,45 @@ function MainApp() {
                 >
                   Entendido
                 </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {confirmDialog && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-3xl shadow-2xl max-w-sm w-full overflow-hidden"
+            >
+              <div className="p-6 space-y-4">
+                <div className="flex items-center gap-3 text-amber-500">
+                  <AlertTriangle className="w-6 h-6" />
+                  <h3 className="font-bold text-slate-900">Confirmar Acción</h3>
+                </div>
+                <p className="text-sm text-slate-600 leading-relaxed">
+                  {confirmDialog.message}
+                </p>
+                <div className="flex gap-3 pt-2">
+                  <button 
+                    onClick={() => setConfirmDialog(null)}
+                    className="flex-1 py-3 border border-slate-200 text-slate-600 font-bold rounded-xl hover:bg-slate-50 transition-all"
+                  >
+                    Cancelar
+                  </button>
+                  <button 
+                    onClick={() => {
+                      confirmDialog.onConfirm();
+                      setConfirmDialog(null);
+                    }}
+                    className="flex-1 py-3 bg-rose-600 text-white font-bold rounded-xl hover:bg-rose-700 transition-all shadow-lg shadow-rose-200"
+                  >
+                    Confirmar
+                  </button>
+                </div>
               </div>
             </motion.div>
           </div>
