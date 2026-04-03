@@ -568,7 +568,7 @@ function MainApp() {
     },
     avgBilling: {
       title: "Promedio Facturado",
-      content: "Este valor se calcula automáticamente promediando tus ingresos brutos de los periodos registrados. El promedio de 6 meses se usa para la Prima de Servicios, y el de 12 meses para las Vacaciones."
+      content: "Este valor se calcula automáticamente promediando tu 'Bruto Base' (solo turnos y recargos) de los periodos registrados. Se utiliza el promedio de 6 meses para la Prima y el de 12 meses para las Vacaciones, siguiendo el estándar legal para no calcular prestaciones sobre prestaciones."
     }
   };
   const [editingPeriod, setEditingPeriod] = useState<BillingPeriod | null>(null);
@@ -2137,6 +2137,16 @@ function MainApp() {
                         })}
                         className="w-full bg-white border border-slate-200 rounded-xl py-2 px-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono"
                       />
+                    </div>
+                    <div className="h-px bg-slate-200 my-2" />
+                    <div className="p-3 bg-indigo-50 rounded-xl border border-indigo-100 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-indigo-600 uppercase">Retención Estimada</span>
+                        <span className="text-xs font-bold text-indigo-700">{formatCurrency(results.all.retefuente)}</span>
+                      </div>
+                      <p className="text-[9px] text-indigo-400 italic leading-tight">
+                        Calculada sobre el Bruto Base actual aplicando tus parámetros manuales y el tope del 40%.
+                      </p>
                     </div>
                     <div className="h-px bg-slate-200 my-2" />
                     <div>
