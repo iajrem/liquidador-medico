@@ -489,8 +489,10 @@ const calculatePeriodTotals = (
     totalP,
     totalAVA,
     effectiveDeductionRate,
-    totalMonthlyHours: totalH,
-    totalMonthlyAVA: totalAVA,
+    totalMonthlyHours: hoursBreakdown.day + hoursBreakdown.night + hoursBreakdown.holidayDay + hoursBreakdown.holidayNight,
+    totalMonthlyAVA: avaBreakdown.day + avaBreakdown.night + avaBreakdown.holidayDay + avaBreakdown.holidayNight,
+    totalAccumulatedHours: (hoursBreakdown.day + hoursBreakdown.night + hoursBreakdown.holidayDay + hoursBreakdown.holidayNight) + 
+                           (avaBreakdown.day + avaBreakdown.night + avaBreakdown.holidayDay + avaBreakdown.holidayNight),
     totalMonthlyPatients: patientsBreakdown.day + patientsBreakdown.night + patientsBreakdown.holidayDay + patientsBreakdown.holidayNight,
     ibc
   };
@@ -875,12 +877,12 @@ function MainApp() {
         if (activePeriod) {
           await updateDoc(doc(db, `users/${user.uid}/periods/${activePeriod.id}`), { 
             status: 'archived',
-            totalGross: results.gross,
-            totalGrossWithBenefits: results.totalGross,
-            totalDeductions: results.totalDeductions,
-            net: results.net,
-            primaProporcional: results.primaProporcional,
-            vacacionesProporcional: results.vacacionesProporcional,
+            totalGross: results.all.gross,
+            totalGrossWithBenefits: results.all.totalGross,
+            totalDeductions: results.all.totalDeductions,
+            net: results.all.net,
+            primaProporcional: results.all.primaProporcional,
+            vacacionesProporcional: results.all.vacacionesProporcional,
             rates: { ...rates } 
           });
         }
@@ -1109,7 +1111,7 @@ function MainApp() {
     
     const path = `users/${user.uid}/periods/${selectedPeriodId}`;
     try {
-      await updateDoc(doc(db, path), { totalGross: results.gross });
+      await updateDoc(doc(db, path), { totalGross: results.all.gross });
       alert('Total bruto del periodo actualizado con éxito.');
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, path);
@@ -1219,23 +1221,23 @@ function MainApp() {
     // Summary Table
     const summaryData = [
       ['Concepto', 'Valor'],
-      ['Sueldo Básico (Turnos)', formatCurrency(results.gross)],
-      ['Prima Proporcional', formatCurrency(results.primaProporcional)],
-      ['Cesantías Proporcionales', formatCurrency(results.cesantiasProporcional)],
-      ['Intereses Cesantías', formatCurrency(results.interesesCesantias)],
-      ['Vacaciones Proporcionales', formatCurrency(results.vacacionesProporcional)],
-      ['TOTAL DEVENGADO', formatCurrency(results.totalGross)],
+      ['Sueldo Básico (Turnos)', formatCurrency(results.definitive.gross)],
+      ['Prima Proporcional', formatCurrency(results.definitive.primaProporcional)],
+      ['Cesantías Proporcionales', formatCurrency(results.definitive.cesantiasProporcional)],
+      ['Intereses Cesantías', formatCurrency(results.definitive.interesesCesantias)],
+      ['Vacaciones Proporcionales', formatCurrency(results.definitive.vacacionesProporcional)],
+      ['TOTAL DEVENGADO', formatCurrency(results.definitive.totalGross)],
       ['', ''],
-      ['Salud (4%)', `-${formatCurrency(results.health)}`],
-      ['Pensión (4%)', `-${formatCurrency(results.pension)}`],
-      ['ARL (0.522%)', `-${formatCurrency(results.arl)}`],
-      ['Caja de Compensación', formatCurrency(results.caja)],
-      ['FSP', results.fsp > 0 ? `-${formatCurrency(results.fsp)}` : '$0'],
-      ['Retención en la Fuente', results.retefuente > 0 ? `-${formatCurrency(results.retefuente)}` : '$0'],
-      ['Otras Deducciones', results.additionalDeductions > 0 ? `-${formatCurrency(results.additionalDeductions)}` : '$0'],
-      ['TOTAL DEDUCCIONES', `-${formatCurrency(results.totalDeductions)}`],
+      ['Salud (4%)', `-${formatCurrency(results.definitive.health)}`],
+      ['Pensión (4%)', `-${formatCurrency(results.definitive.pension)}`],
+      ['ARL (0.522%)', `-${formatCurrency(results.definitive.arl)}`],
+      ['Caja de Compensación', formatCurrency(results.definitive.caja)],
+      ['FSP', results.definitive.fsp > 0 ? `-${formatCurrency(results.definitive.fsp)}` : '$0'],
+      ['Retención en la Fuente', results.definitive.retefuente > 0 ? `-${formatCurrency(results.definitive.retefuente)}` : '$0'],
+      ['Otras Deducciones', results.definitive.additionalDeductions > 0 ? `-${formatCurrency(results.definitive.additionalDeductions)}` : '$0'],
+      ['TOTAL DEDUCCIONES', `-${formatCurrency(results.definitive.totalDeductions)}`],
       ['', ''],
-      ['NETO A RECIBIR', formatCurrency(results.net)],
+      ['NETO A RECIBIR', formatCurrency(results.definitive.net)],
     ];
 
     (doc as any).autoTable({
@@ -1301,13 +1303,13 @@ function MainApp() {
     // Add summary
     rows.push([]);
     rows.push(['RESUMEN']);
-    rows.push(['Total Bruto (Base)', results.gross]);
-    rows.push(['Prima Proporcional', results.primaProporcional]);
-    rows.push(['Vacaciones Proporcionales', results.vacacionesProporcional]);
-    rows.push(['Total Devengado', results.totalGross]);
-    rows.push(['Deducciones Legales', results.legalDeductions]);
-    rows.push(['Deducciones Adicionales', results.additionalDeductions]);
-    rows.push(['Neto a Pagar', results.net]);
+    rows.push(['Total Bruto (Base)', results.definitive.gross]);
+    rows.push(['Prima Proporcional', results.definitive.primaProporcional]);
+    rows.push(['Vacaciones Proporcionales', results.definitive.vacacionesProporcional]);
+    rows.push(['Total Devengado', results.definitive.totalGross]);
+    rows.push(['Deducciones Legales', results.definitive.legalDeductions]);
+    rows.push(['Deducciones Adicionales', results.definitive.additionalDeductions]);
+    rows.push(['Neto a Pagar', results.definitive.net]);
 
     const csvContent = [
       headers.join(','),
@@ -1367,14 +1369,14 @@ function MainApp() {
       const path = `users/${user.uid}/periods/${period.id}`;
       try {
         await updateDoc(doc(db, path), {
-          totalGross: results.gross,
-          totalGrossWithBenefits: results.totalGross,
-          totalDeductions: results.totalDeductions,
-          net: results.net,
-          primaProporcional: results.primaProporcional,
-          vacacionesProporcional: results.vacacionesProporcional,
-          cesantiasProporcional: results.cesantiasProporcional,
-          interesesCesantias: results.interesesCesantias,
+          totalGross: results.all.gross,
+          totalGrossWithBenefits: results.all.totalGross,
+          totalDeductions: results.all.totalDeductions,
+          net: results.all.net,
+          primaProporcional: results.all.primaProporcional,
+          vacacionesProporcional: results.all.vacacionesProporcional,
+          cesantiasProporcional: results.all.cesantiasProporcional,
+          interesesCesantias: results.all.interesesCesantias,
           updatedAt: new Date().toISOString()
         });
         showToast("Cambios guardados en el periodo.");
@@ -1506,13 +1508,27 @@ function MainApp() {
       recordsToCalculate = recordsToCalculate.map(r => r.id === editingId ? currentFormRecord : r);
     }
 
-    return calculatePeriodTotals(
+    const allResults = calculatePeriodTotals(
       recordsToCalculate,
       calculationRates,
       additionalDeductions,
       periods,
       selectedPeriodId
     );
+
+    const definitiveRecords = recordsToCalculate.filter(r => r.isDefinitive);
+    const definitiveResults = calculatePeriodTotals(
+      definitiveRecords,
+      calculationRates,
+      additionalDeductions,
+      periods,
+      selectedPeriodId
+    );
+
+    return {
+      all: allResults,
+      definitive: definitiveResults
+    };
   }, [records, viewingArchive, periods, selectedPeriodId, rates, additionalDeductions, editingId, shift, quantities, user]);
 
   if (!isAuthReady) {
@@ -2608,7 +2624,7 @@ function MainApp() {
                                     (record.patients.holidayNight * rates.patient.holidayNight)
                                   ) : 0);
                                 
-                                const netShift = grossShift * (1 - results.effectiveDeductionRate);
+                                const netShift = grossShift * (1 - results.all.effectiveDeductionRate);
                                 
                                 return (
                                   <div className="flex flex-col">
@@ -2671,86 +2687,95 @@ function MainApp() {
                         <td className="p-4 align-top">
                           <div className="flex flex-col gap-2">
                             <div className="flex flex-col">
-                              <span className="text-xs font-mono font-black text-indigo-600">{results.totalMonthlyHours}h</span>
+                              <span className="text-xs font-mono font-black text-indigo-600">{results.all.totalMonthlyHours}h</span>
                               <span className="text-[9px] font-bold text-slate-400 uppercase">Horas Consulta</span>
                             </div>
                             <div className="grid grid-cols-2 gap-x-2 text-[8px] font-bold uppercase tracking-tighter">
-                              <span className="text-amber-600">D: {results.hoursBreakdown.day}h</span>
-                              <span className="text-indigo-600">N: {results.hoursBreakdown.night}h</span>
-                              <span className="text-rose-600">DF: {results.hoursBreakdown.holidayDay}h</span>
-                              <span className="text-purple-600">NF: {results.hoursBreakdown.holidayNight}h</span>
+                              <span className="text-amber-600">D: {results.all.hoursBreakdown.day}h</span>
+                              <span className="text-indigo-600">N: {results.all.hoursBreakdown.night}h</span>
+                              <span className="text-rose-600">DF: {results.all.hoursBreakdown.holidayDay}h</span>
+                              <span className="text-purple-600">NF: {results.all.hoursBreakdown.holidayNight}h</span>
                             </div>
                             <div className="pt-1 border-t border-slate-200">
-                              <span className="text-[9px] font-bold text-slate-600">{formatCurrency(results.totalH)}</span>
+                              <span className="text-[9px] font-bold text-slate-600">{formatCurrency(results.all.totalH)}</span>
                             </div>
                           </div>
                         </td>
                         <td className="p-4 align-top">
                           <div className="flex flex-col gap-2">
                             <div className="flex flex-col">
-                              <span className="text-xs font-mono font-black text-violet-600">{results.totalMonthlyAVA}h</span>
+                              <span className="text-xs font-mono font-black text-violet-600">{results.all.totalMonthlyAVA}h</span>
                               <span className="text-[9px] font-bold text-slate-400 uppercase">Horas AVA</span>
                             </div>
                             <div className="grid grid-cols-2 gap-x-2 text-[8px] font-bold uppercase tracking-tighter">
-                              <span className="text-amber-600">D: {results.avaBreakdown.day}h</span>
-                              <span className="text-indigo-600">N: {results.avaBreakdown.night}h</span>
-                              <span className="text-rose-600">DF: {results.avaBreakdown.holidayDay}h</span>
-                              <span className="text-purple-600">NF: {results.avaBreakdown.holidayNight}h</span>
+                              <span className="text-amber-600">D: {results.all.avaBreakdown.day}h</span>
+                              <span className="text-indigo-600">N: {results.all.avaBreakdown.night}h</span>
+                              <span className="text-rose-600">DF: {results.all.avaBreakdown.holidayDay}h</span>
+                              <span className="text-purple-600">NF: {results.all.avaBreakdown.holidayNight}h</span>
                             </div>
                             <div className="pt-1 border-t border-slate-200">
-                              <span className="text-[9px] font-bold text-slate-600">{formatCurrency(results.totalAVA)}</span>
+                              <span className="text-[9px] font-bold text-slate-600">{formatCurrency(results.all.totalAVA)}</span>
                             </div>
                           </div>
                         </td>
                         <td className="p-4 align-top">
                           <div className="flex flex-col gap-2">
                             <div className="flex flex-col">
-                              <span className="text-xs font-mono font-black text-emerald-600">{results.totalMonthlyPatients} Pac.</span>
+                              <span className="text-xs font-mono font-black text-emerald-600">{results.all.totalMonthlyPatients} Pac.</span>
                               <span className="text-[9px] font-bold text-slate-400 uppercase">Pacientes</span>
                             </div>
                             <div className="grid grid-cols-2 gap-x-2 text-[8px] font-bold uppercase tracking-tighter">
-                              <span className="text-amber-600">D: {results.patientsBreakdown.day}</span>
-                              <span className="text-indigo-600">N: {results.patientsBreakdown.night}</span>
-                              <span className="text-rose-600">DF: {results.patientsBreakdown.holidayDay}</span>
-                              <span className="text-purple-600">NF: {results.patientsBreakdown.holidayNight}</span>
+                              <span className="text-amber-600">D: {results.all.patientsBreakdown.day}</span>
+                              <span className="text-indigo-600">N: {results.all.patientsBreakdown.night}</span>
+                              <span className="text-rose-600">DF: {results.all.patientsBreakdown.holidayDay}</span>
+                              <span className="text-purple-600">NF: {results.all.patientsBreakdown.holidayNight}</span>
                             </div>
                             <div className="pt-1 border-t border-slate-200">
-                              <span className="text-[9px] font-bold text-slate-600">{formatCurrency(results.totalP)}</span>
+                              <span className="text-[9px] font-bold text-slate-600">{formatCurrency(results.all.totalP)}</span>
                             </div>
                           </div>
                         </td>
                         <td className="p-4 align-top">
                           <div className="flex flex-col gap-1">
-                            <span className="text-xs font-mono font-black text-slate-800">{formatCurrency(results.gross)}</span>
+                            <span className="text-xs font-mono font-black text-slate-800">{formatCurrency(results.all.gross)}</span>
                             <span className="text-[9px] font-bold text-slate-400 uppercase">Bruto Total</span>
+                            
+                            <div className="mt-2 p-2 bg-slate-50 rounded-lg border border-slate-100">
+                              <p className="text-[8px] font-bold text-slate-600 uppercase mb-1">Acumulado Horas</p>
+                              <div className="flex justify-between items-center">
+                                <span className="text-xs font-mono font-black text-slate-700">{results.all.totalAccumulatedHours}h</span>
+                                <span className="text-[7px] font-bold text-slate-400 uppercase">Total Periodo</span>
+                              </div>
+                            </div>
+
                             <div className="mt-2 p-2 bg-indigo-50 rounded-lg border border-indigo-100">
                               <p className="text-[8px] font-bold text-indigo-600 uppercase mb-1">Resumen Dinero</p>
                               <div className="flex flex-col gap-1 text-[8px] font-bold text-slate-500">
                                 <div className="flex flex-col border-b border-indigo-100 pb-1">
-                                  <div className="flex justify-between text-indigo-600"><span>Consulta:</span> <span>{formatCurrency(results.totalH)}</span></div>
+                                  <div className="flex justify-between text-indigo-600"><span>Consulta:</span> <span>{formatCurrency(results.all.totalH)}</span></div>
                                   <div className="grid grid-cols-2 gap-x-2 text-[7px] opacity-70">
-                                    <span>D: {formatCurrency(results.hoursValues.day)}</span>
-                                    <span>N: {formatCurrency(results.hoursValues.night)}</span>
-                                    <span>DF: {formatCurrency(results.hoursValues.holidayDay)}</span>
-                                    <span>NF: {formatCurrency(results.hoursValues.holidayNight)}</span>
+                                    <span>D: {formatCurrency(results.all.hoursValues.day)}</span>
+                                    <span>N: {formatCurrency(results.all.hoursValues.night)}</span>
+                                    <span>DF: {formatCurrency(results.all.hoursValues.holidayDay)}</span>
+                                    <span>NF: {formatCurrency(results.all.hoursValues.holidayNight)}</span>
                                   </div>
                                 </div>
                                 <div className="flex flex-col border-b border-indigo-100 pb-1">
-                                  <div className="flex justify-between text-violet-600"><span>AVA:</span> <span>{formatCurrency(results.totalAVA)}</span></div>
+                                  <div className="flex justify-between text-violet-600"><span>AVA:</span> <span>{formatCurrency(results.all.totalAVA)}</span></div>
                                   <div className="grid grid-cols-2 gap-x-2 text-[7px] opacity-70">
-                                    <span>D: {formatCurrency(results.avaValues.day)}</span>
-                                    <span>N: {formatCurrency(results.avaValues.night)}</span>
-                                    <span>DF: {formatCurrency(results.avaValues.holidayDay)}</span>
-                                    <span>NF: {formatCurrency(results.avaValues.holidayNight)}</span>
+                                    <span>D: {formatCurrency(results.all.avaValues.day)}</span>
+                                    <span>N: {formatCurrency(results.all.avaValues.night)}</span>
+                                    <span>DF: {formatCurrency(results.all.avaValues.holidayDay)}</span>
+                                    <span>NF: {formatCurrency(results.all.avaValues.holidayNight)}</span>
                                   </div>
                                 </div>
                                 <div className="flex flex-col">
-                                  <div className="flex justify-between text-emerald-600"><span>Pacientes:</span> <span>{formatCurrency(results.totalP)}</span></div>
+                                  <div className="flex justify-between text-emerald-600"><span>Pacientes:</span> <span>{formatCurrency(results.all.totalP)}</span></div>
                                   <div className="grid grid-cols-2 gap-x-2 text-[7px] opacity-70">
-                                    <span>D: {formatCurrency(results.patientsValues.day)}</span>
-                                    <span>N: {formatCurrency(results.patientsValues.night)}</span>
-                                    <span>DF: {formatCurrency(results.patientsValues.holidayDay)}</span>
-                                    <span>NF: {formatCurrency(results.patientsValues.holidayNight)}</span>
+                                    <span>D: {formatCurrency(results.all.patientsValues.day)}</span>
+                                    <span>N: {formatCurrency(results.all.patientsValues.night)}</span>
+                                    <span>DF: {formatCurrency(results.all.patientsValues.holidayDay)}</span>
+                                    <span>NF: {formatCurrency(results.all.patientsValues.holidayNight)}</span>
                                   </div>
                                 </div>
                               </div>
@@ -2804,6 +2829,52 @@ function MainApp() {
             </section>
           )}
 
+          {/* Step 3.5: Projections and Totals */}
+          <section className="space-y-6">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-sm">3.5</div>
+              <div className="flex items-center gap-3">
+                <h2 className="text-xl font-bold text-slate-800">Proyecciones y Totales (Acumulado)</h2>
+                <span className="px-3 py-1 bg-indigo-100 text-indigo-700 text-[10px] font-black uppercase tracking-widest rounded-full border border-indigo-200">
+                  Incluye Proyecciones
+                </span>
+              </div>
+            </div>
+            
+            <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-6">
+              <p className="text-sm text-slate-500">Este resumen incluye tanto los registros definitivos como las proyecciones actuales.</p>
+              
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100 space-y-2">
+                  <div className="flex items-center gap-2 text-slate-600">
+                    <Clock className="w-4 h-4" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest">Horas Totales</span>
+                  </div>
+                  <p className="text-3xl font-bold text-slate-800">{results.all.totalAccumulatedHours}h</p>
+                  <p className="text-[10px] text-slate-400 uppercase font-bold tracking-tighter">Consulta + AVA</p>
+                </div>
+                
+                <div className="bg-indigo-50 p-6 rounded-3xl border border-indigo-100 space-y-2">
+                  <div className="flex items-center gap-2 text-indigo-700">
+                    <TrendingUp className="w-4 h-4" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest">Monto a Recibir</span>
+                  </div>
+                  <p className="text-3xl font-bold text-indigo-800">{formatCurrency(results.all.net)}</p>
+                  <p className="text-[10px] text-indigo-400 uppercase font-bold tracking-tighter">Neto Proyectado</p>
+                </div>
+
+                <div className="bg-rose-50 p-6 rounded-3xl border border-rose-100 space-y-2">
+                  <div className="flex items-center gap-2 text-rose-700">
+                    <TrendingDown className="w-4 h-4" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest">Deducciones</span>
+                  </div>
+                  <p className="text-3xl font-bold text-rose-800">{formatCurrency(results.all.totalDeductions)}</p>
+                  <p className="text-[10px] text-rose-400 uppercase font-bold tracking-tighter">Legales + Otras</p>
+                </div>
+              </div>
+            </div>
+          </section>
+
           {/* Step 4: Final Extract */}
           <section className="space-y-6">
             <div className="flex items-center gap-3">
@@ -2816,9 +2887,14 @@ function MainApp() {
                 {/* Summary Header */}
                 <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
                   <div className="space-y-1">
-                    <h3 className="text-2xl font-bold text-slate-800">
-                      {periods.find(p => p.id === selectedPeriodId)?.name || 'Extracto de Pago'}
-                    </h3>
+                    <div className="flex items-center gap-3">
+                      <h3 className="text-2xl font-bold text-slate-800">
+                        {periods.find(p => p.id === selectedPeriodId)?.name || 'Extracto de Pago'}
+                      </h3>
+                      <span className="px-3 py-1 bg-emerald-100 text-emerald-700 text-[10px] font-black uppercase tracking-widest rounded-full border border-emerald-200">
+                        Solo Definitivos
+                      </span>
+                    </div>
                     <p className="text-slate-500 font-medium">Resumen detallado de ingresos y deducciones legales.</p>
                   </div>
                   <div className="flex items-center gap-3">
@@ -2853,17 +2929,17 @@ function MainApp() {
                       <TrendingUp className="w-4 h-4" />
                       <span className="text-[10px] font-bold uppercase tracking-widest">Total Devengado</span>
                     </div>
-                    <p className="text-3xl font-bold text-emerald-800">{formatCurrency(results.totalGross)}</p>
+                    <p className="text-3xl font-bold text-emerald-800">{formatCurrency(results.definitive.totalGross)}</p>
                   </div>
                 <div className="bg-rose-50 p-6 rounded-3xl border border-rose-100 space-y-2">
                     <div className="flex items-center gap-2 text-rose-700">
                       <TrendingDown className="w-4 h-4" />
                       <span className="text-[10px] font-bold uppercase tracking-widest">Total Deducciones</span>
                     </div>
-                    <p className="text-3xl font-bold text-rose-800">{formatCurrency(results.totalDeductions)}</p>
+                    <p className="text-3xl font-bold text-rose-800">{formatCurrency(results.definitive.totalDeductions)}</p>
                     <div className="flex items-center gap-4 text-[9px] font-bold text-rose-400 uppercase tracking-widest pt-1">
-                      <span>Legales: {formatCurrency(results.legalDeductions)}</span>
-                      <span>Otras: {formatCurrency(results.additionalDeductions)}</span>
+                      <span>Legales: {formatCurrency(results.definitive.legalDeductions)}</span>
+                      <span>Otras: {formatCurrency(results.definitive.additionalDeductions)}</span>
                     </div>
                   </div>
                   <div className="bg-indigo-600 p-6 rounded-3xl text-white space-y-2 shadow-xl shadow-indigo-100">
@@ -2871,7 +2947,7 @@ function MainApp() {
                       <Wallet className="w-4 h-4" />
                       <span className="text-[10px] font-bold uppercase tracking-widest">Neto a Recibir</span>
                     </div>
-                    <p className="text-3xl font-bold">{formatCurrency(results.net)}</p>
+                    <p className="text-3xl font-bold">{formatCurrency(results.definitive.net)}</p>
                   </div>
                 </div>
 
@@ -2886,23 +2962,23 @@ function MainApp() {
                     <div className="space-y-4">
                       <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
                         <span className="text-sm font-medium text-slate-600">Sueldo Básico (Turnos)</span>
-                        <span className="font-bold text-slate-800">{formatCurrency(results.gross)}</span>
+                        <span className="font-bold text-slate-800">{formatCurrency(results.definitive.gross)}</span>
                       </div>
                       <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
                         <span className="text-sm font-medium text-slate-600">Prima Proporcional</span>
-                        <span className="font-bold text-slate-800">{formatCurrency(results.primaProporcional)}</span>
+                        <span className="font-bold text-slate-800">{formatCurrency(results.definitive.primaProporcional)}</span>
                       </div>
                       <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
                         <span className="text-sm font-medium text-slate-600">Cesantías Proporcionales</span>
-                        <span className="font-bold text-slate-800">{formatCurrency(results.cesantiasProporcional)}</span>
+                        <span className="font-bold text-slate-800">{formatCurrency(results.definitive.cesantiasProporcional)}</span>
                       </div>
                       <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
                         <span className="text-sm font-medium text-slate-600">Intereses Cesantías</span>
-                        <span className="font-bold text-slate-800">{formatCurrency(results.interesesCesantias)}</span>
+                        <span className="font-bold text-slate-800">{formatCurrency(results.definitive.interesesCesantias)}</span>
                       </div>
                       <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
                         <span className="text-sm font-medium text-slate-600">Vacaciones Proporcionales</span>
-                        <span className="font-bold text-slate-800">{formatCurrency(results.vacacionesProporcional)}</span>
+                        <span className="font-bold text-slate-800">{formatCurrency(results.definitive.vacacionesProporcional)}</span>
                       </div>
                     </div>
                   </div>
@@ -2917,38 +2993,38 @@ function MainApp() {
                       <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
                         <div className="flex flex-col">
                           <span className="text-sm font-medium text-slate-600">Salud (4%)</span>
-                          <span className="text-[10px] text-slate-400">IBC: {formatCurrency(results.ibc)}</span>
+                          <span className="text-[10px] text-slate-400">IBC: {formatCurrency(results.definitive.ibc)}</span>
                         </div>
-                        <span className="font-bold text-rose-700">-{formatCurrency(results.health)}</span>
+                        <span className="font-bold text-rose-700">-{formatCurrency(results.definitive.health)}</span>
                       </div>
                       <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
                         <span className="text-sm font-medium text-slate-600">Pensión (4%)</span>
-                        <span className="font-bold text-rose-700">-{formatCurrency(results.pension)}</span>
+                        <span className="font-bold text-rose-700">-{formatCurrency(results.definitive.pension)}</span>
                       </div>
                       <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
                         <span className="text-sm font-medium text-slate-600">ARL (0.522%)</span>
-                        <span className="font-bold text-rose-700">-{formatCurrency(results.arl)}</span>
+                        <span className="font-bold text-rose-700">-{formatCurrency(results.definitive.arl)}</span>
                       </div>
                       <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
                         <span className="text-sm font-medium text-slate-600">Caja de Compensación (4%)</span>
-                        <span className="font-bold text-slate-800">{formatCurrency(results.caja)}</span>
+                        <span className="font-bold text-slate-800">{formatCurrency(results.definitive.caja)}</span>
                       </div>
-                      {results.fsp > 0 && (
+                      {results.definitive.fsp > 0 && (
                         <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
                           <span className="text-sm font-medium text-slate-600">Fondo Solidaridad Pensional</span>
-                          <span className="font-bold text-rose-700">-{formatCurrency(results.fsp)}</span>
+                          <span className="font-bold text-rose-700">-{formatCurrency(results.definitive.fsp)}</span>
                         </div>
                       )}
-                      {results.retefuente > 0 && (
+                      {results.definitive.retefuente > 0 && (
                         <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
                           <span className="text-sm font-medium text-slate-600">Retención en la Fuente</span>
-                          <span className="font-bold text-rose-700">-{formatCurrency(results.retefuente)}</span>
+                          <span className="font-bold text-rose-700">-{formatCurrency(results.definitive.retefuente)}</span>
                         </div>
                       )}
-                      {results.additionalDeductions > 0 && (
+                      {results.definitive.additionalDeductions > 0 && (
                         <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
                           <span className="text-sm font-medium text-slate-600">Otras Deducciones</span>
-                          <span className="font-bold text-rose-700">-{formatCurrency(results.additionalDeductions)}</span>
+                          <span className="font-bold text-rose-700">-{formatCurrency(results.definitive.additionalDeductions)}</span>
                         </div>
                       )}
                     </div>
