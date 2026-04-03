@@ -195,6 +195,7 @@ interface Rates {
     billingCutoffDay: number;   // Day of the month for billing cutoff
     nightShiftStart: number;    // Hour when night shift starts (e.g., 19 for 7 PM)
     vacationLastResetDate: string | null; // ISO date of last vacation reset
+    ibcMinimo: boolean;         // If true, IBC is capped at SMMLV if gross > SMMLV
   };
 }
 
@@ -277,6 +278,7 @@ const DEFAULT_RATES: Rates = {
     billingCutoffDay: 29,
     nightShiftStart: 19,
     vacationLastResetDate: null,
+    ibcMinimo: false,
   }
 };
 
@@ -387,7 +389,11 @@ const calculatePeriodTotals = (
   });
 
   const gross = totalH + totalP + totalAVA;
-  const ibc = gross > 0 ? Math.max(Math.min(gross, SMMLV_2026 * 25), SMMLV_2026) : 0;
+  let ibc = gross > 0 ? Math.max(Math.min(gross, SMMLV_2026 * 25), SMMLV_2026) : 0;
+  
+  if (rates.payroll.ibcMinimo && gross > SMMLV_2026) {
+    ibc = SMMLV_2026;
+  }
 
   const health = ibc * 0.04;
   const pension = ibc * 0.04;
@@ -483,8 +489,7 @@ const calculatePeriodTotals = (
 
   return {
     gross,
-    totalGross: totalGrossWithBenefits, // Final earned
-    net,
+    totalPatrimonial: totalGrossWithBenefits,
     health,
     pension,
     arl,
@@ -499,6 +504,12 @@ const calculatePeriodTotals = (
     cesantiasProporcional,
     interesesCesantias,
     vacacionesProporcional,
+    ibc,
+    totalMonthlyHours: hoursBreakdown.day + hoursBreakdown.night + hoursBreakdown.holidayDay + hoursBreakdown.holidayNight,
+    totalMonthlyAVA: avaBreakdown.day + avaBreakdown.night + avaBreakdown.holidayDay + avaBreakdown.holidayNight,
+    totalAccumulatedHours: (hoursBreakdown.day + hoursBreakdown.night + hoursBreakdown.holidayDay + hoursBreakdown.holidayNight) + 
+                           (avaBreakdown.day + avaBreakdown.night + avaBreakdown.holidayDay + avaBreakdown.holidayNight),
+    totalMonthlyPatients: patientsBreakdown.day + patientsBreakdown.night + patientsBreakdown.holidayDay + patientsBreakdown.holidayNight,
     hoursBreakdown,
     hoursValues,
     avaBreakdown,
@@ -511,12 +522,6 @@ const calculatePeriodTotals = (
     totalP,
     totalAVA,
     effectiveDeductionRate,
-    totalMonthlyHours: hoursBreakdown.day + hoursBreakdown.night + hoursBreakdown.holidayDay + hoursBreakdown.holidayNight,
-    totalMonthlyAVA: avaBreakdown.day + avaBreakdown.night + avaBreakdown.holidayDay + avaBreakdown.holidayNight,
-    totalAccumulatedHours: (hoursBreakdown.day + hoursBreakdown.night + hoursBreakdown.holidayDay + hoursBreakdown.holidayNight) + 
-                           (avaBreakdown.day + avaBreakdown.night + avaBreakdown.holidayDay + avaBreakdown.holidayNight),
-    totalMonthlyPatients: patientsBreakdown.day + patientsBreakdown.night + patientsBreakdown.holidayDay + patientsBreakdown.holidayNight,
-    ibc,
     avg6,
     avg12
   };
@@ -591,6 +596,10 @@ function MainApp() {
     avgBilling: {
       title: "Promedio Facturado y Cortes",
       content: "• Primas: Se calculan sobre el promedio del semestre actual (Ene-Jun o Jul-Dic). El promedio se reinicia automáticamente al cambiar de semestre.\n• Vacaciones: Se calculan sobre el promedio de los últimos 12 meses (o desde el último reinicio). Si ya recibiste tus vacaciones, usa el botón 'Reiniciar Ciclo' para comenzar un nuevo cálculo desde cero."
+    },
+    ibcMinimo: {
+      title: "Aportar sobre el Mínimo",
+      content: "Si activas esta opción, tus deducciones de Salud y Pensión se calcularán sobre el Salario Mínimo (SMMLV), independientemente de si ganas más. Esto aumenta tu neto mensual pero reduce tus aportes a seguridad social."
     }
   };
   const [editingPeriod, setEditingPeriod] = useState<BillingPeriod | null>(null);
@@ -938,7 +947,7 @@ function MainApp() {
           await updateDoc(doc(db, `users/${user.uid}/periods/${activePeriod.id}`), { 
             status: 'archived',
             totalGross: results.all.gross,
-            totalGrossWithBenefits: results.all.totalGross,
+            totalGrossWithBenefits: results.all.totalPatrimonial,
             totalDeductions: results.all.totalDeductions,
             net: results.all.net,
             primaProporcional: results.all.primaProporcional,
@@ -1083,7 +1092,7 @@ function MainApp() {
         
         await updateDoc(doc(db, `users/${user.uid}/periods/${selectedPeriodId}`), { 
           totalGross: newTotals.gross,
-          totalGrossWithBenefits: newTotals.totalGross,
+          totalGrossWithBenefits: newTotals.totalPatrimonial,
           totalDeductions: newTotals.totalDeductions,
           net: newTotals.net,
           primaProporcional: newTotals.primaProporcional,
@@ -1133,7 +1142,7 @@ function MainApp() {
         
         await updateDoc(doc(db, `users/${user.uid}/periods/${selectedPeriodId}`), { 
           totalGross: newTotals.gross,
-          totalGrossWithBenefits: newTotals.totalGross,
+          totalGrossWithBenefits: newTotals.totalPatrimonial,
           totalDeductions: newTotals.totalDeductions,
           net: newTotals.net,
           primaProporcional: newTotals.primaProporcional,
@@ -1286,18 +1295,17 @@ function MainApp() {
       ['Cesantías Proporcionales', formatCurrency(results.definitive.cesantiasProporcional)],
       ['Intereses Cesantías', formatCurrency(results.definitive.interesesCesantias)],
       ['Vacaciones Proporcionales', formatCurrency(results.definitive.vacacionesProporcional)],
-      ['TOTAL DEVENGADO', formatCurrency(results.definitive.totalGross)],
+      ['TOTAL PATRIMONIAL', formatCurrency(results.definitive.totalPatrimonial)],
       ['', ''],
       ['Salud (4%)', `-${formatCurrency(results.definitive.health)}`],
       ['Pensión (4%)', `-${formatCurrency(results.definitive.pension)}`],
-      ['ARL (0.522%)', `-${formatCurrency(results.definitive.arl)}`],
       ['Caja de Compensación', formatCurrency(results.definitive.caja)],
       ['FSP', results.definitive.fsp > 0 ? `-${formatCurrency(results.definitive.fsp)}` : '$0'],
       ['Retención en la Fuente', results.definitive.retefuente > 0 ? `-${formatCurrency(results.definitive.retefuente)}` : '$0'],
       ['Otras Deducciones', results.definitive.additionalDeductions > 0 ? `-${formatCurrency(results.definitive.additionalDeductions)}` : '$0'],
       ['TOTAL DEDUCCIONES', `-${formatCurrency(results.definitive.totalDeductions)}`],
       ['', ''],
-      ['NETO A RECIBIR', formatCurrency(results.definitive.net)],
+      ['NETO A RECIBIR (CAJA)', formatCurrency(results.definitive.netCash)],
     ];
 
     (doc as any).autoTable({
@@ -1366,10 +1374,10 @@ function MainApp() {
     rows.push(['Total Bruto (Base)', results.definitive.gross]);
     rows.push(['Prima Proporcional', results.definitive.primaProporcional]);
     rows.push(['Vacaciones Proporcionales', results.definitive.vacacionesProporcional]);
-    rows.push(['Total Devengado', results.definitive.totalGross]);
+    rows.push(['Total Patrimonial', results.definitive.totalPatrimonial]);
     rows.push(['Deducciones Legales', results.definitive.legalDeductions]);
     rows.push(['Deducciones Adicionales', results.definitive.additionalDeductions]);
-    rows.push(['Neto a Pagar', results.definitive.net]);
+    rows.push(['Neto a Pagar (Caja)', results.definitive.netCash]);
 
     const csvContent = [
       headers.join(','),
@@ -1430,7 +1438,7 @@ function MainApp() {
       try {
         await updateDoc(doc(db, path), {
           totalGross: results.all.gross,
-          totalGrossWithBenefits: results.all.totalGross,
+          totalGrossWithBenefits: results.all.totalPatrimonial,
           totalDeductions: results.all.totalDeductions,
           net: results.all.net,
           primaProporcional: results.all.primaProporcional,
@@ -2233,6 +2241,29 @@ function MainApp() {
                         {formatCurrency(results.all.avg6)}
                       </div>
                       <p className="text-[9px] text-indigo-400 mt-1 italic">Calculado automáticamente del historial</p>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 pt-6 border-t border-indigo-100">
+                    <div className="flex items-center justify-between p-4 bg-indigo-50 rounded-2xl border border-indigo-100">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest">Aportar sobre el Mínimo</span>
+                        <button 
+                          onClick={() => setShowHelp(HELP_CONTENT.ibcMinimo)}
+                          className="text-indigo-400 hover:text-indigo-600 transition-colors"
+                        >
+                          <Info className="w-3 h-3" />
+                        </button>
+                      </div>
+                      <button
+                        onClick={() => setRates({
+                          ...rates,
+                          payroll: { ...rates.payroll, ibcMinimo: !rates.payroll.ibcMinimo }
+                        })}
+                        className={`w-10 h-5 rounded-full transition-all relative ${rates.payroll.ibcMinimo ? 'bg-indigo-600' : 'bg-slate-300'}`}
+                      >
+                        <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${rates.payroll.ibcMinimo ? 'right-1' : 'left-1'}`} />
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -3065,9 +3096,9 @@ function MainApp() {
                   <div className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100 space-y-2">
                     <div className="flex items-center gap-2 text-emerald-700">
                       <TrendingUp className="w-4 h-4" />
-                      <span className="text-[10px] font-bold uppercase tracking-widest">Total Devengado</span>
+                      <span className="text-[10px] font-bold uppercase tracking-widest">Total Devengado (Mes)</span>
                     </div>
-                    <p className="text-3xl font-bold text-emerald-800">{formatCurrency(results.definitive.totalGross)}</p>
+                    <p className="text-3xl font-bold text-emerald-800">{formatCurrency(results.definitive.gross)}</p>
                   </div>
                 <div className="bg-rose-50 p-6 rounded-3xl border border-rose-100 space-y-2">
                     <div className="flex items-center gap-2 text-rose-700">
@@ -3091,8 +3122,8 @@ function MainApp() {
                 </div>
 
                 <div className="p-5 bg-indigo-50 rounded-3xl border border-indigo-100">
-                  <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest mb-1">Ganancia Total Real (Con Prestaciones)</p>
-                  <p className="text-2xl font-black text-indigo-700">{formatCurrency(results.definitive.net)}</p>
+                  <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest mb-1">Ganancia Total Real (Patrimonial)</p>
+                  <p className="text-2xl font-black text-indigo-700">{formatCurrency(results.definitive.totalPatrimonial)}</p>
                   <p className="text-[10px] text-indigo-400 mt-1 italic">
                     Este valor incluye el ahorro de Prima, Vacaciones y Cesantías que estás acumulando este mes.
                   </p>
