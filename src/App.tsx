@@ -531,6 +531,7 @@ function MainApp() {
   const [activePeriod, setActivePeriod] = useState<BillingPeriod | null>(null);
   const [selectedPeriodId, setSelectedPeriodId] = useState<string | null>(null);
   const [showPeriodModal, setShowPeriodModal] = useState(false);
+  const [editingPeriod, setEditingPeriod] = useState<BillingPeriod | null>(null);
   const [newPeriodData, setNewPeriodData] = useState({
     name: '',
     startDate: '',
@@ -747,6 +748,7 @@ function MainApp() {
   const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' | 'info' } | null>(null);
   const [showPeriodSelectionModal, setShowPeriodSelectionModal] = useState(false);
+  const [showAccumulatedDetails, setShowAccumulatedDetails] = useState(false);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
     setToast({ message, type });
@@ -825,59 +827,85 @@ function MainApp() {
   }, [shift.startTime, shift.endTime, shift.isHolidayStart, shift.isHolidayEnd, shift.isAVAShift, autoCalculatePatients, rates.payroll.nightShiftStart]);
 
   // --- Actions ---
-  const startNewPeriod = async () => {
+  const savePeriod = async () => {
     if (!user) return;
     if (!newPeriodData.startDate || !newPeriodData.endDate) {
       showToast('Por favor, ingresa las fechas de inicio y fin.', 'error');
       return;
     }
 
-    // --- Correction 3: Period Name Validation ---
     const trimmedName = newPeriodData.name.trim();
     if (trimmedName) {
-      const duplicate = periods.find(p => p.name.trim().toLowerCase() === trimmedName.toLowerCase());
+      const duplicate = periods.find(p => 
+        p.name.trim().toLowerCase() === trimmedName.toLowerCase() && 
+        (!editingPeriod || p.id !== editingPeriod.id)
+      );
       if (duplicate) {
         showToast('Ya existe un periodo con ese nombre. Por favor, elige otro.', 'error');
         return;
       }
     }
 
-    const periodId = crypto.randomUUID();
-    const newPeriod: BillingPeriod = {
-      id: periodId,
-      userId: user.uid,
-      name: trimmedName || `Periodo ${newPeriodData.startDate} - ${newPeriodData.endDate}`,
-      startDate: newPeriodData.startDate,
-      endDate: newPeriodData.endDate,
-      status: 'active',
-      createdAt: new Date().toISOString(),
-      rates: { ...rates }
-    };
-
-    const path = `users/${user.uid}/periods/${periodId}`;
     try {
-      // If there's an active period, archive it first and save its final gross and benefits
-      if (activePeriod) {
-        await updateDoc(doc(db, `users/${user.uid}/periods/${activePeriod.id}`), { 
-          status: 'archived',
-          totalGross: results.gross,
-          totalGrossWithBenefits: results.totalGross,
-          totalDeductions: results.totalDeductions,
-          net: results.net,
-          primaProporcional: results.primaProporcional,
-          vacacionesProporcional: results.vacacionesProporcional,
-          rates: { ...rates } 
+      if (editingPeriod) {
+        const path = `users/${user.uid}/periods/${editingPeriod.id}`;
+        await updateDoc(doc(db, path), {
+          name: trimmedName || `Periodo ${newPeriodData.startDate} - ${newPeriodData.endDate}`,
+          startDate: newPeriodData.startDate,
+          endDate: newPeriodData.endDate,
+          updatedAt: new Date().toISOString()
         });
+        showToast('Periodo actualizado con éxito.');
+      } else {
+        const periodId = crypto.randomUUID();
+        const newPeriod: BillingPeriod = {
+          id: periodId,
+          userId: user.uid,
+          name: trimmedName || `Periodo ${newPeriodData.startDate} - ${newPeriodData.endDate}`,
+          startDate: newPeriodData.startDate,
+          endDate: newPeriodData.endDate,
+          status: 'active',
+          createdAt: new Date().toISOString(),
+          rates: { ...rates }
+        };
+
+        const path = `users/${user.uid}/periods/${periodId}`;
+        
+        // If there's an active period, archive it first
+        if (activePeriod) {
+          await updateDoc(doc(db, `users/${user.uid}/periods/${activePeriod.id}`), { 
+            status: 'archived',
+            totalGross: results.gross,
+            totalGrossWithBenefits: results.totalGross,
+            totalDeductions: results.totalDeductions,
+            net: results.net,
+            primaProporcional: results.primaProporcional,
+            vacacionesProporcional: results.vacacionesProporcional,
+            rates: { ...rates } 
+          });
+        }
+        
+        await setDoc(doc(db, path), newPeriod);
+        setSelectedPeriodId(periodId);
+        showToast('Nuevo periodo iniciado con éxito.');
       }
       
-      await setDoc(doc(db, path), newPeriod);
-      setSelectedPeriodId(periodId);
       setShowPeriodModal(false);
+      setEditingPeriod(null);
       setNewPeriodData({ name: '', startDate: '', endDate: '' });
-      showToast('Nuevo periodo iniciado con éxito.');
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, path);
+      handleFirestoreError(error, editingPeriod ? OperationType.UPDATE : OperationType.CREATE, `users/${user.uid}/periods`);
     }
+  };
+
+  const openEditPeriod = (period: BillingPeriod) => {
+    setEditingPeriod(period);
+    setNewPeriodData({
+      name: period.name,
+      startDate: period.startDate,
+      endDate: period.endDate
+    });
+    setShowPeriodModal(true);
   };
 
   const addRecord = async () => {
@@ -2863,14 +2891,23 @@ function MainApp() {
             )}
           </section>
 
-          {/* Step 6: Accumulated Totals */}
+          {/* Step 5: Accumulated Totals */}
           <section className="space-y-6">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-sm">6</div>
-              <h2 className="text-xl font-bold text-slate-800">Totales Acumulados (Todos los Periodos)</h2>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-sm">5</div>
+                <h2 className="text-xl font-bold text-slate-800">Totales Acumulados (Todos los Periodos)</h2>
+              </div>
+              <button 
+                onClick={() => setShowAccumulatedDetails(!showAccumulatedDetails)}
+                className="px-4 py-2 bg-white border border-indigo-200 text-indigo-600 text-xs font-bold rounded-xl hover:bg-indigo-50 transition-all flex items-center gap-2"
+              >
+                {showAccumulatedDetails ? 'Ocultar Desglose' : 'Ver Desglose por Periodo'}
+                <ChevronDown className={`w-4 h-4 transition-transform ${showAccumulatedDetails ? 'rotate-180' : ''}`} />
+              </button>
             </div>
 
-            <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+            <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-8">
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 {(() => {
                   const accumulated = periods.reduce((acc, p) => ({
@@ -2902,13 +2939,50 @@ function MainApp() {
                   );
                 })()}
               </div>
+
+              {showAccumulatedDetails && (
+                <motion.div 
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="overflow-hidden"
+                >
+                  <div className="overflow-x-auto rounded-2xl border border-slate-100">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-100">
+                          <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Periodo</th>
+                          <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Bruto Base</th>
+                          <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Devengado</th>
+                          <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Deducciones</th>
+                          <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Neto</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {periods.map(p => (
+                          <tr key={p.id} className="hover:bg-slate-50 transition-colors">
+                            <td className="p-4">
+                              <p className="text-xs font-bold text-slate-700">{p.name}</p>
+                              <p className="text-[9px] text-slate-400">{p.startDate} - {p.endDate}</p>
+                            </td>
+                            <td className="p-4 text-xs font-mono text-right text-slate-600">{formatCurrency(p.totalGross || 0)}</td>
+                            <td className="p-4 text-xs font-mono text-right text-emerald-600 font-bold">{formatCurrency(p.totalGrossWithBenefits || 0)}</td>
+                            <td className="p-4 text-xs font-mono text-right text-rose-500">{formatCurrency(p.totalDeductions || 0)}</td>
+                            <td className="p-4 text-xs font-mono text-right text-indigo-600 font-bold">{formatCurrency(p.net || 0)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </motion.div>
+              )}
             </div>
           </section>
 
-          {/* Step 5: Period History */}
+          {/* Step 6: Period History */}
           <section className="space-y-6">
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-sm">5</div>
+              <div className="w-8 h-8 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-sm">6</div>
               <h2 className="text-xl font-bold text-slate-800">Historial de Periodos</h2>
             </div>
 
@@ -2933,14 +3007,40 @@ function MainApp() {
                       }`}
                     >
                       <div className="flex items-center justify-between mb-3">
-                        <div className={`p-2 rounded-xl ${p.status === 'active' ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-200 text-slate-500'}`}>
-                          <Calendar className="w-4 h-4" />
+                        <div className="flex items-center gap-2">
+                          <div className={`p-2 rounded-xl ${p.status === 'active' ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-200 text-slate-500'}`}>
+                            <Calendar className="w-4 h-4" />
+                          </div>
+                          <div className="flex flex-col">
+                            <span className={`px-2 py-0.5 rounded-full text-[8px] font-bold uppercase tracking-wider w-fit ${
+                              p.status === 'active' ? 'bg-emerald-500 text-white' : 'bg-slate-300 text-slate-600'
+                            }`}>
+                              {p.status === 'active' ? 'Activo' : 'Archivado'}
+                            </span>
+                          </div>
                         </div>
-                        <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider ${
-                          p.status === 'active' ? 'bg-emerald-500 text-white' : 'bg-slate-300 text-slate-600'
-                        }`}>
-                          {p.status === 'active' ? 'Activo' : 'Archivado'}
-                        </span>
+                        <div className="flex items-center gap-1">
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openEditPeriod(p);
+                            }}
+                            className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-white rounded-lg transition-all"
+                            title="Editar Periodo"
+                          >
+                            <Edit className="w-3.5 h-3.5" />
+                          </button>
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deletePeriod(p.id);
+                            }}
+                            className="p-2 text-slate-400 hover:text-rose-500 hover:bg-white rounded-lg transition-all"
+                            title="Eliminar Periodo"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                       <h4 className="font-bold text-slate-800 mb-1 group-hover:text-indigo-600 transition-colors">{p.name}</h4>
                       <p className="text-[10px] text-slate-500 font-medium">
@@ -3058,17 +3158,26 @@ function MainApp() {
               <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-indigo-600 text-white">
                 <div className="flex items-center gap-3">
                   <Calendar className="w-5 h-5" />
-                  <h3 className="font-bold">Nuevo Periodo de Facturación</h3>
+                  <h3 className="font-bold">
+                    {editingPeriod ? 'Editar Periodo' : 'Nuevo Periodo de Facturación'}
+                  </h3>
                 </div>
-                <button onClick={() => setShowPeriodModal(false)} className="p-1 hover:bg-white/20 rounded-lg transition-colors">
+                <button 
+                  onClick={() => {
+                    setShowPeriodModal(false);
+                    setEditingPeriod(null);
+                  }} 
+                  className="p-1 hover:bg-white/20 rounded-lg transition-colors"
+                >
                   <X className="w-5 h-5" />
                 </button>
               </div>
               
               <div className="p-6 space-y-6">
                 <p className="text-sm text-slate-500 leading-relaxed">
-                  Al iniciar un nuevo periodo, el actual se archivará y podrás consultarlo más tarde. 
-                  Indica las fechas de inicio y fin para este nuevo ciclo.
+                  {editingPeriod 
+                    ? 'Actualiza los datos del periodo seleccionado.' 
+                    : 'Al iniciar un nuevo periodo, el actual se archivará y podrás consultarlo más tarde.'}
                 </p>
                 
                 <div className="space-y-4">
@@ -3108,16 +3217,19 @@ function MainApp() {
               
               <div className="p-6 bg-slate-50 flex gap-3">
                 <button 
-                  onClick={() => setShowPeriodModal(false)}
+                  onClick={() => {
+                    setShowPeriodModal(false);
+                    setEditingPeriod(null);
+                  }}
                   className="flex-1 py-3 border border-slate-200 text-slate-600 font-bold rounded-xl hover:bg-white transition-all"
                 >
                   Cancelar
                 </button>
                 <button 
-                  onClick={startNewPeriod}
+                  onClick={savePeriod}
                   className="flex-1 py-3 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200"
                 >
-                  Iniciar Periodo
+                  {editingPeriod ? 'Guardar Cambios' : 'Iniciar Periodo'}
                 </button>
               </div>
             </motion.div>
