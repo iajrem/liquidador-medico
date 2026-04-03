@@ -405,7 +405,7 @@ const calculatePeriodTotals = (
   }
 
   const sumAdditionalDeductions = additionalDeductions.reduce((sum, d) => sum + d.amount, 0);
-  const legalDeductions = health + pension + fsp + arl;
+  const legalDeductions = health + pension + fsp; // ARL is paid by employer in Colombia for employees
 
   // --- Proportional Calculations based on Period History ---
   const currentPeriod = periods.find(p => p.id === selectedPeriodId);
@@ -477,6 +477,7 @@ const calculatePeriodTotals = (
   const totalDeductions = legalDeductions + sumAdditionalDeductions + retefuente;
   const totalGrossWithBenefits = gross + primaProporcional + cesantiasProporcional + interesesCesantias + vacacionesProporcional;
   const net = totalGrossWithBenefits - totalDeductions;
+  const netCash = gross - totalDeductions;
 
   const effectiveDeductionRate = totalGrossWithBenefits > 0 ? totalDeductions / totalGrossWithBenefits : 0;
 
@@ -492,6 +493,8 @@ const calculatePeriodTotals = (
     retefuente,
     additionalDeductions: sumAdditionalDeductions,
     totalDeductions,
+    net,
+    netCash,
     primaProporcional,
     cesantiasProporcional,
     interesesCesantias,
@@ -3080,10 +3083,19 @@ function MainApp() {
                   <div className="bg-indigo-600 p-6 rounded-3xl text-white space-y-2 shadow-xl shadow-indigo-100">
                     <div className="flex items-center gap-2 opacity-80">
                       <Wallet className="w-4 h-4" />
-                      <span className="text-[10px] font-bold uppercase tracking-widest">Neto a Recibir</span>
+                      <span className="text-[10px] font-bold uppercase tracking-widest">Neto a Recibir (Caja)</span>
                     </div>
-                    <p className="text-3xl font-bold">{formatCurrency(results.definitive.net)}</p>
+                    <p className="text-3xl font-bold">{formatCurrency(results.definitive.netCash)}</p>
+                    <p className="text-[9px] opacity-70 italic">Dinero estimado en tu cuenta bancaria.</p>
                   </div>
+                </div>
+
+                <div className="p-5 bg-indigo-50 rounded-3xl border border-indigo-100">
+                  <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest mb-1">Ganancia Total Real (Con Prestaciones)</p>
+                  <p className="text-2xl font-black text-indigo-700">{formatCurrency(results.definitive.net)}</p>
+                  <p className="text-[10px] text-indigo-400 mt-1 italic">
+                    Este valor incluye el ahorro de Prima, Vacaciones y Cesantías que estás acumulando este mes.
+                  </p>
                 </div>
 
                 {/* Detailed Breakdown */}
@@ -3135,10 +3147,6 @@ function MainApp() {
                       <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
                         <span className="text-sm font-medium text-slate-600">Pensión (4%)</span>
                         <span className="font-bold text-rose-700">-{formatCurrency(results.definitive.pension)}</span>
-                      </div>
-                      <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                        <span className="text-sm font-medium text-slate-600">ARL (0.522%)</span>
-                        <span className="font-bold text-rose-700">-{formatCurrency(results.definitive.arl)}</span>
                       </div>
                       <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
                         <span className="text-sm font-medium text-slate-600">Caja de Compensación (4%)</span>
