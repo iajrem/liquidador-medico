@@ -822,6 +822,8 @@ function MainApp() {
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' | 'info' } | null>(null);
   const [showPeriodSelectionModal, setShowPeriodSelectionModal] = useState(false);
   const [showAccumulatedDetails, setShowAccumulatedDetails] = useState(false);
+  const [showAccumulatedComponents, setShowAccumulatedComponents] = useState(false);
+  const [showProjectionDetails, setShowProjectionDetails] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<{
     message: string;
     onConfirm: () => void;
@@ -1671,7 +1673,8 @@ function MainApp() {
 
     return {
       all: allResults,
-      definitive: definitiveResults
+      definitive: definitiveResults,
+      calculationRates
     };
   }, [records, viewingArchive, periods, selectedPeriodId, rates, additionalDeductions, editingId, shift, quantities, user]);
 
@@ -2854,19 +2857,19 @@ function MainApp() {
                             <td className="p-4 text-xs font-mono">
                               {(() => {
                                 const grossShift = 
-                                  (record.hours.day * rates.hourly.day) +
-                                  (record.hours.night * rates.hourly.night) +
-                                  (record.hours.holidayDay * rates.hourly.holidayDay) +
-                                  (record.hours.holidayNight * rates.hourly.holidayNight) +
-                                  (record.ava.day * rates.ava.day) +
-                                  (record.ava.night * rates.ava.night) +
-                                  (record.ava.holidayDay * rates.ava.holidayDay) +
-                                  (record.ava.holidayNight * rates.ava.holidayNight) +
+                                  (record.hours.day * results.calculationRates.hourly.day) +
+                                  (record.hours.night * results.calculationRates.hourly.night) +
+                                  (record.hours.holidayDay * results.calculationRates.hourly.holidayDay) +
+                                  (record.hours.holidayNight * results.calculationRates.hourly.holidayNight) +
+                                  (record.ava.day * results.calculationRates.ava.day) +
+                                  (record.ava.night * results.calculationRates.ava.night) +
+                                  (record.ava.holidayDay * results.calculationRates.ava.holidayDay) +
+                                  (record.ava.holidayNight * results.calculationRates.ava.holidayNight) +
                                   (record.applyPatients ? (
-                                    (record.patients.day * rates.patient.day) +
-                                    (record.patients.night * rates.patient.night) +
-                                    (record.patients.holidayDay * rates.patient.holidayDay) +
-                                    (record.patients.holidayNight * rates.patient.holidayNight)
+                                    (record.patients.day * results.calculationRates.patient.day) +
+                                    (record.patients.night * results.calculationRates.patient.night) +
+                                    (record.patients.holidayDay * results.calculationRates.patient.holidayDay) +
+                                    (record.patients.holidayNight * results.calculationRates.patient.holidayNight)
                                   ) : 0);
                                 
                                 const netShift = grossShift * (1 - results.all.effectiveDeductionRate);
@@ -3120,14 +3123,58 @@ function MainApp() {
                 </div>
 
                 <div className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100 space-y-2">
-                  <div className="flex items-center gap-2 text-emerald-700">
-                    <TrendingUp className="w-4 h-4" />
-                    <span className="text-[10px] font-bold uppercase tracking-widest">Ganancia Total Real</span>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-emerald-700">
+                      <TrendingUp className="w-4 h-4" />
+                      <span className="text-[10px] font-bold uppercase tracking-widest">Ganancia Total Real</span>
+                    </div>
+                    <button 
+                      onClick={() => setShowProjectionDetails(!showProjectionDetails)}
+                      className="p-1 hover:bg-emerald-100 rounded-lg transition-colors text-emerald-600"
+                    >
+                      <ChevronDown className={`w-4 h-4 transition-transform ${showProjectionDetails ? 'rotate-180' : ''}`} />
+                    </button>
                   </div>
                   <p className="text-3xl font-bold text-emerald-800">{formatCurrency(results.all.net)}</p>
                   <p className="text-[10px] text-emerald-400 uppercase font-bold tracking-tighter italic">
                     Incluye Prestaciones
                   </p>
+
+                  <AnimatePresence>
+                    {showProjectionDetails && (
+                      <motion.div 
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="pt-4 space-y-2 border-t border-emerald-100 mt-4 overflow-hidden"
+                      >
+                        <div className="flex justify-between text-[10px]">
+                          <span className="text-emerald-600 font-medium">Salario Facturado (Bruto):</span>
+                          <span className="font-bold text-emerald-800">{formatCurrency(results.all.gross)}</span>
+                        </div>
+                        <div className="flex justify-between text-[10px]">
+                          <span className="text-emerald-600 font-medium">Prima Proporcional:</span>
+                          <span className="font-bold text-emerald-800">{formatCurrency(results.all.primaProporcional)}</span>
+                        </div>
+                        <div className="flex justify-between text-[10px]">
+                          <span className="text-emerald-600 font-medium">Cesantías Proporcionales:</span>
+                          <span className="font-bold text-emerald-800">{formatCurrency(results.all.cesantiasProporcional)}</span>
+                        </div>
+                        <div className="flex justify-between text-[10px]">
+                          <span className="text-emerald-600 font-medium">Intereses Cesantías:</span>
+                          <span className="font-bold text-emerald-800">{formatCurrency(results.all.interesesCesantias)}</span>
+                        </div>
+                        <div className="flex justify-between text-[10px]">
+                          <span className="text-emerald-600 font-medium">Vacaciones Proporcionales:</span>
+                          <span className="font-bold text-emerald-800">{formatCurrency(results.all.vacacionesProporcional)}</span>
+                        </div>
+                        <div className="flex justify-between text-[10px] pt-1 border-t border-emerald-100">
+                          <span className="text-rose-600 font-medium">Deducciones Totales:</span>
+                          <span className="font-bold text-rose-700">-{formatCurrency(results.all.totalDeductions)}</span>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
               </div>
             </div>
@@ -3331,32 +3378,105 @@ function MainApp() {
             <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-8">
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 {(() => {
-                  const accumulated = periods.reduce((acc, p) => ({
-                    gross: acc.gross + (p.totalGross || 0),
-                    totalGross: acc.totalGross + (p.totalGrossWithBenefits || 0),
-                    deductions: acc.deductions + (p.totalDeductions || 0),
-                    net: acc.net + (p.net || 0)
-                  }), { gross: 0, totalGross: 0, deductions: 0, net: 0 });
+                  const accumulated = periods.reduce((acc, p) => {
+                    const isCurrent = p.id === selectedPeriodId;
+                    const pGross = isCurrent ? results.all.gross : (p.totalGross || 0);
+                    const pTotalGross = isCurrent ? results.all.totalPatrimonial : (p.totalGrossWithBenefits || 0);
+                    const pDeductions = isCurrent ? results.all.totalDeductions : (p.totalDeductions || 0);
+                    const pNet = isCurrent ? results.all.net : (p.net || 0);
+                    const pPrima = isCurrent ? results.all.primaProporcional : (p.primaProporcional || 0);
+                    const pCesantias = isCurrent ? results.all.cesantiasProporcional : (p.cesantiasProporcional || 0);
+                    const pIntereses = isCurrent ? results.all.interesesCesantias : (p.interesesCesantias || 0);
+                    const pVacaciones = isCurrent ? results.all.vacacionesProporcional : (p.vacacionesProporcional || 0);
+
+                    return {
+                      gross: acc.gross + pGross,
+                      totalGross: acc.totalGross + pTotalGross,
+                      deductions: acc.deductions + pDeductions,
+                      net: acc.net + pNet,
+                      prima: acc.prima + pPrima,
+                      cesantias: acc.cesantias + pCesantias,
+                      intereses: acc.intereses + pIntereses,
+                      vacaciones: acc.vacaciones + pVacaciones
+                    };
+                  }, { gross: 0, totalGross: 0, deductions: 0, net: 0, prima: 0, cesantias: 0, intereses: 0, vacaciones: 0 });
 
                   return (
-                    <>
-                      <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Ingreso Salarial</p>
-                        <p className="text-xl font-bold text-slate-700">{formatCurrency(accumulated.gross)}</p>
+                    <div className="space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                        <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Ingreso Salarial</p>
+                          <p className="text-xl font-bold text-slate-700">{formatCurrency(accumulated.gross)}</p>
+                        </div>
+                        <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-1">Total Ingresos + Prestaciones</p>
+                              <p className="text-xl font-bold text-emerald-700">{formatCurrency(accumulated.totalGross)}</p>
+                            </div>
+                            <button 
+                              onClick={() => setShowAccumulatedComponents(!showAccumulatedComponents)}
+                              className="p-1 hover:bg-emerald-100 rounded-lg transition-colors text-emerald-600"
+                            >
+                              <ChevronDown className={`w-4 h-4 transition-transform ${showAccumulatedComponents ? 'rotate-180' : ''}`} />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="p-4 bg-rose-50 rounded-2xl border border-rose-100">
+                          <p className="text-[10px] font-bold text-rose-600 uppercase tracking-widest mb-1">Total Deducciones</p>
+                          <p className="text-xl font-bold text-rose-700">{formatCurrency(accumulated.deductions)}</p>
+                        </div>
+                        <div className="p-4 bg-indigo-600 rounded-2xl text-white shadow-lg shadow-indigo-100">
+                          <p className="text-[10px] font-bold opacity-80 uppercase tracking-widest mb-1">Total Neto</p>
+                          <p className="text-xl font-bold">{formatCurrency(accumulated.net)}</p>
+                        </div>
                       </div>
-                      <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
-                        <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-1">Total Ingresos + Prestaciones</p>
-                        <p className="text-xl font-bold text-emerald-700">{formatCurrency(accumulated.totalGross)}</p>
-                      </div>
-                      <div className="p-4 bg-rose-50 rounded-2xl border border-rose-100">
-                        <p className="text-[10px] font-bold text-rose-600 uppercase tracking-widest mb-1">Total Deducciones</p>
-                        <p className="text-xl font-bold text-rose-700">{formatCurrency(accumulated.deductions)}</p>
-                      </div>
-                      <div className="p-4 bg-indigo-600 rounded-2xl text-white shadow-lg shadow-indigo-100">
-                        <p className="text-[10px] font-bold opacity-80 uppercase tracking-widest mb-1">Total Neto</p>
-                        <p className="text-xl font-bold">{formatCurrency(accumulated.net)}</p>
-                      </div>
-                    </>
+
+                      <AnimatePresence>
+                        {showAccumulatedComponents && (
+                          <motion.div 
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: 'auto' }}
+                            exit={{ opacity: 0, height: 0 }}
+                            className="bg-slate-50 p-6 rounded-2xl border border-slate-100 overflow-hidden"
+                          >
+                            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Desglose de Componentes Acumulados</h4>
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                              <div className="space-y-3">
+                                <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+                                  <span className="text-xs font-medium text-slate-600">Total Salario Bruto:</span>
+                                  <span className="text-xs font-bold text-slate-800">{formatCurrency(accumulated.gross)}</span>
+                                </div>
+                                <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+                                  <span className="text-xs font-medium text-slate-600">Total Prima:</span>
+                                  <span className="text-xs font-bold text-emerald-600">{formatCurrency(accumulated.prima)}</span>
+                                </div>
+                              </div>
+                              <div className="space-y-3">
+                                <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+                                  <span className="text-xs font-medium text-slate-600">Total Cesantías:</span>
+                                  <span className="text-xs font-bold text-emerald-600">{formatCurrency(accumulated.cesantias)}</span>
+                                </div>
+                                <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+                                  <span className="text-xs font-medium text-slate-600">Total Intereses Cesantías:</span>
+                                  <span className="text-xs font-bold text-emerald-600">{formatCurrency(accumulated.intereses)}</span>
+                                </div>
+                              </div>
+                              <div className="space-y-3">
+                                <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+                                  <span className="text-xs font-medium text-slate-600">Total Vacaciones:</span>
+                                  <span className="text-xs font-bold text-emerald-600">{formatCurrency(accumulated.vacaciones)}</span>
+                                </div>
+                                <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+                                  <span className="text-xs font-medium text-rose-500">Total Deducciones:</span>
+                                  <span className="text-xs font-bold text-rose-600">-{formatCurrency(accumulated.deductions)}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
                   );
                 })()}
               </div>
