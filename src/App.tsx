@@ -272,6 +272,9 @@ interface ShiftRecord {
   applyPatients: boolean;
   isDefinitive: boolean;
   isExtraShift: boolean;
+  isHolidayStart: boolean;
+  isHolidayEnd: boolean;
+  isAVAShift: boolean;
 }
 
 // --- Constants ---
@@ -356,6 +359,65 @@ export default function App() {
 }
 
 // --- Pure Calculation Logic (Correction 2 & 4) ---
+const calculateShiftDistribution = (s: { startTime: string, endTime: string, isHolidayStart: boolean, isHolidayEnd: boolean, isExtraShift?: boolean }, r: Rates, threshold: number = 0) => {
+  const [startH, startM] = s.startTime.split(':').map(Number);
+  const [endH, endM] = s.endTime.split(':').map(Number);
+
+  const startTotal = startH * 60 + startM;
+  let endTotal = endH * 60 + endM;
+  if (endTotal <= startTotal) endTotal += 24 * 60; // turno cruza medianoche
+
+  const nightStart = r.payroll.nightShiftStart * 60; // en minutos
+  const dayStart = 6 * 60;
+
+  const calculateForRange = (rangeStart: number, rangeEnd: number) => {
+    let mD = 0, mN = 0, mDF = 0, mNF = 0;
+    const addBlockRange = (from: number, to: number, isHoliday: boolean, isDay: boolean) => {
+      const overlap = Math.max(0, Math.min(to, rangeEnd) - Math.max(from, rangeStart));
+      if (overlap <= 0) return;
+      if (isDay && !isHoliday) mD += overlap;
+      else if (!isDay && !isHoliday) mN += overlap;
+      else if (isDay && isHoliday) mDF += overlap;
+      else mNF += overlap;
+    };
+
+    // Primer día (minutos 0..1440)
+    const h = s.isHolidayStart;
+    addBlockRange(0,        dayStart,   h, false); // 00:00-06:00 nocturno
+    addBlockRange(dayStart, nightStart, h, true);  // 06:00-nightStart diurno
+    addBlockRange(nightStart, 1440,     h, false); // nightStart-24:00 nocturno
+
+    // Segundo día, si el turno cruza medianoche (minutos 1440..2880)
+    if (rangeEnd > 1440) {
+      const h2 = s.isHolidayEnd;
+      addBlockRange(1440,        1440 + dayStart,   h2, false);
+      addBlockRange(1440 + dayStart, 1440 + nightStart, h2, true);
+      addBlockRange(1440 + nightStart, 2880,          h2, false);
+    }
+    return { mD, mN, mDF, mNF };
+  };
+
+  const ordEnd = s.isExtraShift ? startTotal : (threshold > 0 ? Math.min(endTotal, startTotal + threshold * 60) : (threshold === 0 && !s.isExtraShift ? endTotal : startTotal));
+  const ord = calculateForRange(startTotal, ordEnd);
+  const extra = (s.isExtraShift || (threshold >= 0 && endTotal > ordEnd)) ? calculateForRange(ordEnd, endTotal) : { mD: 0, mN: 0, mDF: 0, mNF: 0 };
+
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  return {
+    ord: {
+      day:         round2(ord.mD / 60),
+      night:       round2(ord.mN / 60),
+      holidayDay:  round2(ord.mDF / 60),
+      holidayNight: round2(ord.mNF / 60),
+    },
+    extra: {
+      day:         round2(extra.mD / 60),
+      night:       round2(extra.mN / 60),
+      holidayDay:  round2(extra.mDF / 60),
+      holidayNight: round2(extra.mNF / 60),
+    }
+  };
+};
+
 const calculatePeriodTotals = (
   records: ShiftRecord[],
   rates: Rates,
@@ -378,33 +440,77 @@ const calculatePeriodTotals = (
   const patientsBreakdown = { day: 0, night: 0, holidayDay: 0, holidayNight: 0 };
   const monthlyHours: { [key: string]: number } = {};
 
-  records.forEach(record => {
-    // Regular Hours (Consulta)
-    hoursBreakdown.day += record.hours.day;
-    hoursBreakdown.night += record.hours.night;
-    hoursBreakdown.holidayDay += record.hours.holidayDay;
-    hoursBreakdown.holidayNight += record.hours.holidayNight;
-    hoursBreakdown.extraDay += record.hours.extraDay || 0;
-    hoursBreakdown.extraNight += record.hours.extraNight || 0;
-    hoursBreakdown.extraHolidayDay += record.hours.extraHolidayDay || 0;
-    hoursBreakdown.extraHolidayNight += record.hours.extraHolidayNight || 0;
+  // Cumulative threshold logic
+  const activePeriod = periods.find(p => p.id === selectedPeriodId);
+  const threshold = activePeriod?.extraThreshold || 0;
+  let cumulativeHours = 0;
 
-    // AVA Hours
-    avaBreakdown.day += record.ava.day;
-    avaBreakdown.night += record.ava.night;
-    avaBreakdown.holidayDay += record.ava.holidayDay;
-    avaBreakdown.holidayNight += record.ava.holidayNight;
-    avaBreakdown.extraDay += record.ava.extraDay || 0;
-    avaBreakdown.extraNight += record.ava.extraNight || 0;
-    avaBreakdown.extraHolidayDay += record.ava.extraHolidayDay || 0;
-    avaBreakdown.extraHolidayNight += record.ava.extraHolidayNight || 0;
+  // Sort records chronologically to apply threshold correctly
+  const sortedRecords = [...records].sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
+
+  sortedRecords.forEach(record => {
+    // Re-calculate distribution based on cumulative threshold
+    let dist;
+    if (record.isExtraShift) {
+      // Manually marked as extra - all hours are extra
+      dist = calculateShiftDistribution({ 
+        startTime: record.startTime, 
+        endTime: record.endTime, 
+        isHolidayStart: record.isHolidayStart || false, 
+        isHolidayEnd: record.isHolidayEnd || false, 
+        isExtraShift: true 
+      }, rates, 0);
+    } else {
+      const remainingToThreshold = threshold > 0 ? Math.max(0, threshold - cumulativeHours) : 999999;
+      dist = calculateShiftDistribution({
+        startTime: record.startTime,
+        endTime: record.endTime,
+        isHolidayStart: record.isHolidayStart || false,
+        isHolidayEnd: record.isHolidayEnd || false,
+        isExtraShift: false
+      }, rates, remainingToThreshold);
+      cumulativeHours += (dist.ord.day + dist.ord.night + dist.ord.holidayDay + dist.ord.holidayNight);
+    }
+
+    // Regular Hours (Consulta)
+    hoursBreakdown.day += dist.ord.day;
+    hoursBreakdown.night += dist.ord.night;
+    hoursBreakdown.holidayDay += dist.ord.holidayDay;
+    hoursBreakdown.holidayNight += dist.ord.holidayNight;
+    hoursBreakdown.extraDay += dist.extra.day;
+    hoursBreakdown.extraNight += dist.extra.night;
+    hoursBreakdown.extraHolidayDay += dist.extra.holidayDay;
+    hoursBreakdown.extraHolidayNight += dist.extra.holidayNight;
+
+    // AVA Hours - For now we assume AVA follows the same distribution if it were to have extras
+    // But usually AVA is just flat hours. However, if the user wants it to split too:
+    if (record.isAVAShift) {
+      // If it's an AVA shift, we use the same distribution logic for AVA hours
+      avaBreakdown.day += dist.ord.day;
+      avaBreakdown.night += dist.ord.night;
+      avaBreakdown.holidayDay += dist.ord.holidayDay;
+      avaBreakdown.holidayNight += dist.ord.holidayNight;
+      avaBreakdown.extraDay += dist.extra.day;
+      avaBreakdown.extraNight += dist.extra.night;
+      avaBreakdown.extraHolidayDay += dist.extra.holidayDay;
+      avaBreakdown.extraHolidayNight += dist.extra.holidayNight;
+      
+      // Subtract from hoursBreakdown because it was added above but it's actually an AVA shift
+      hoursBreakdown.day -= dist.ord.day;
+      hoursBreakdown.night -= dist.ord.night;
+      hoursBreakdown.holidayDay -= dist.ord.holidayDay;
+      hoursBreakdown.holidayNight -= dist.ord.holidayNight;
+      hoursBreakdown.extraDay -= dist.extra.day;
+      hoursBreakdown.extraNight -= dist.extra.night;
+      hoursBreakdown.extraHolidayDay -= dist.extra.holidayDay;
+      hoursBreakdown.extraHolidayNight -= dist.extra.holidayNight;
+    }
 
     const rDate = new Date(record.date + 'T00:00:00');
     const monthName = rDate.toLocaleString('es-ES', { month: 'long', year: 'numeric' });
-    const recordTotalHours = record.hours.day + record.hours.night + record.hours.holidayDay + record.hours.holidayNight +
-                             record.ava.day + record.ava.night + record.ava.holidayDay + record.ava.holidayNight +
-                             (record.hours.extraDay || 0) + (record.hours.extraNight || 0) + (record.hours.extraHolidayDay || 0) + (record.hours.extraHolidayNight || 0) +
-                             (record.ava.extraDay || 0) + (record.ava.extraNight || 0) + (record.ava.extraHolidayDay || 0) + (record.ava.extraHolidayNight || 0);
+    const recordTotalHours = (dist.ord.day + dist.ord.night + dist.ord.holidayDay + dist.ord.holidayNight) +
+                             (dist.extra.day + dist.extra.night + dist.extra.holidayDay + dist.extra.holidayNight);
+    
     monthlyHours[monthName] = (monthlyHours[monthName] || 0) + recordTotalHours;
 
     if (record.applyPatients) {
@@ -453,6 +559,7 @@ const calculatePeriodTotals = (
                            avaBreakdown.day + avaBreakdown.night + avaBreakdown.holidayDay + avaBreakdown.holidayNight;
   const totalExtraHours = hoursBreakdown.extraDay + hoursBreakdown.extraNight + hoursBreakdown.extraHolidayDay + hoursBreakdown.extraHolidayNight +
                          avaBreakdown.extraDay + avaBreakdown.extraNight + avaBreakdown.extraHolidayDay + avaBreakdown.extraHolidayNight;
+  const totalAllHours = totalRegularHours + totalExtraHours;
 
   let ibc = gross > 0 ? Math.max(Math.min(gross, SMMLV_2026 * 25), SMMLV_2026) : 0;
   
@@ -479,13 +586,12 @@ const calculatePeriodTotals = (
   const legalDeductions = health + pension + fsp; // ARL is paid by employer in Colombia for employees
 
   // --- Proportional Calculations based on Period History ---
-  const currentPeriod = periods.find(p => p.id === selectedPeriodId);
-  const currentEndDate = currentPeriod ? new Date(currentPeriod.endDate + 'T00:00:00') : new Date();
+  const currentEndDate = activePeriod ? new Date(activePeriod.endDate + 'T00:00:00') : new Date();
   const currentYear = currentEndDate.getFullYear();
   const currentMonth = currentEndDate.getMonth(); // 0-11
   const currentSemester = currentMonth < 6 ? 0 : 1; // 0: Jan-Jun, 1: Jul-Dec
 
-  const otherPeriods = periods.filter(p => p.id !== selectedPeriodId && p.endDate < (currentPeriod?.startDate || ''));
+  const otherPeriods = periods.filter(p => p.id !== selectedPeriodId && p.endDate < (activePeriod?.startDate || ''));
   const sortedOthers = [...otherPeriods].sort((a, b) => b.endDate.localeCompare(a.endDate));
   
   // Average 6 Months (Semester Reset for Primas)
@@ -699,19 +805,24 @@ function MainApp() {
       const result = await signInWithGoogle();
       console.log("Login successful:", result.user.uid);
     } catch (error: any) {
+      const errorCode = error.code || "";
+      const errorMessage = error.message || "";
+      
+      // Ignore user-cancelled login attempts
+      if (errorCode === 'auth/cancelled-popup-request' || errorCode === 'auth/popup-closed-by-user') {
+        console.log("Login cancelled by user");
+        return;
+      }
+
       console.error("Detailed Login error:", error);
       let message = "Error al iniciar sesión. Por favor, intenta de nuevo.";
       
-      const errorCode = error.code || "";
-      const errorMessage = error.message || "";
       const currentDomain = window.location.hostname;
 
       if (errorCode === 'auth/popup-blocked') {
         message = "El navegador bloqueó la ventana emergente. Por favor, permite las ventanas emergentes para este sitio.";
       } else if (errorCode === 'auth/unauthorized-domain' || errorMessage.includes('auth/unauthorized-domain')) {
         message = `Este dominio (${currentDomain}) no está autorizado en la consola de Firebase. Por favor, agrégalo a la lista de dominios autorizados en la configuración de Firebase Auth.`;
-      } else if (errorCode === 'auth/cancelled-popup-request' || errorCode === 'auth/popup-closed-by-user') {
-        message = "La ventana de inicio de sesión se cerró antes de completar el proceso.";
       } else if (errorCode === 'auth/network-request-failed') {
         message = "Error de red. Por favor, verifica tu conexión a internet.";
       } else if (errorCode === 'auth/internal-error') {
@@ -917,64 +1028,8 @@ function MainApp() {
   }, [periods, activePeriod, selectedPeriodId]);
 
   // --- Logic: Calculate Hours Distribution ---
-  const calculateShiftDistribution = (s: { startTime: string, endTime: string, isHolidayStart: boolean, isHolidayEnd: boolean, isExtraShift?: boolean }, r: typeof rates, threshold: number = 0) => {
-    const [startH, startM] = s.startTime.split(':').map(Number);
-    const [endH, endM] = s.endTime.split(':').map(Number);
-
-    const startTotal = startH * 60 + startM;
-    let endTotal = endH * 60 + endM;
-    if (endTotal <= startTotal) endTotal += 24 * 60; // turno cruza medianoche
-
-    const nightStart = r.payroll.nightShiftStart * 60; // en minutos
-    const dayStart = 6 * 60;
-
-    const calculateForRange = (rangeStart: number, rangeEnd: number) => {
-      let mD = 0, mN = 0, mDF = 0, mNF = 0;
-      const addBlockRange = (from: number, to: number, isHoliday: boolean, isDay: boolean) => {
-        const overlap = Math.max(0, Math.min(to, rangeEnd) - Math.max(from, rangeStart));
-        if (overlap <= 0) return;
-        if (isDay && !isHoliday) mD += overlap;
-        else if (!isDay && !isHoliday) mN += overlap;
-        else if (isDay && isHoliday) mDF += overlap;
-        else mNF += overlap;
-      };
-
-      // Primer día (minutos 0..1440)
-      const h = s.isHolidayStart;
-      addBlockRange(0,        dayStart,   h, false); // 00:00-06:00 nocturno
-      addBlockRange(dayStart, nightStart, h, true);  // 06:00-nightStart diurno
-      addBlockRange(nightStart, 1440,     h, false); // nightStart-24:00 nocturno
-
-      // Segundo día, si el turno cruza medianoche (minutos 1440..2880)
-      if (rangeEnd > 1440) {
-        const h2 = s.isHolidayEnd;
-        addBlockRange(1440,        1440 + dayStart,   h2, false);
-        addBlockRange(1440 + dayStart, 1440 + nightStart, h2, true);
-        addBlockRange(1440 + nightStart, 2880,          h2, false);
-      }
-      return { mD, mN, mDF, mNF };
-    };
-
-    const ordEnd = s.isExtraShift ? startTotal : (threshold > 0 ? Math.min(endTotal, startTotal + threshold * 60) : endTotal);
-    const ord = calculateForRange(startTotal, ordEnd);
-    const extra = (s.isExtraShift || (threshold > 0 && endTotal > ordEnd)) ? calculateForRange(ordEnd, endTotal) : { mD: 0, mN: 0, mDF: 0, mNF: 0 };
-
-    const round2 = (n: number) => Math.round(n * 100) / 100;
-    return {
-      ord: {
-        day:         round2(ord.mD / 60),
-        night:       round2(ord.mN / 60),
-        holidayDay:  round2(ord.mDF / 60),
-        holidayNight: round2(ord.mNF / 60),
-      },
-      extra: {
-        day:         round2(extra.mD / 60),
-        night:       round2(extra.mN / 60),
-        holidayDay:  round2(extra.mDF / 60),
-        holidayNight: round2(extra.mNF / 60),
-      }
-    };
-  };
+  // --- Shift Distribution Logic ---
+  // Moved outside MainApp for use in calculatePeriodTotals
 
   useEffect(() => {
     const calculateDistribution = () => {
@@ -1123,7 +1178,7 @@ function MainApp() {
       
       setShowPeriodModal(false);
       setEditingPeriod(null);
-      setNewPeriodData({ name: '', startDate: '', endDate: '' });
+      setNewPeriodData({ name: '', startDate: '', endDate: '', extraThreshold: 160 });
     } catch (error) {
       handleFirestoreError(error, editingPeriod ? OperationType.UPDATE : OperationType.CREATE, `users/${user.uid}/periods`);
     }
@@ -1134,7 +1189,8 @@ function MainApp() {
     setNewPeriodData({
       name: period.name,
       startDate: period.startDate,
-      endDate: period.endDate
+      endDate: period.endDate,
+      extraThreshold: period.extraThreshold || 160
     });
     setShowPeriodModal(true);
   };
@@ -1165,6 +1221,9 @@ function MainApp() {
             : records.find(r => r.id === editingId)?.isDefinitive) || false 
         : false,
       isExtraShift: shift.isExtraShift,
+      isHolidayStart: shift.isHolidayStart,
+      isHolidayEnd: shift.isHolidayEnd,
+      isAVAShift: shift.isAVAShift,
     };
 
     if (viewingArchive) {
@@ -1767,6 +1826,9 @@ function MainApp() {
           ? viewingArchive.records.find(r => r.id === editingId)?.isDefinitive 
           : records.find(r => r.id === editingId)?.isDefinitive) || false,
         isExtraShift: shift.isExtraShift,
+        isHolidayStart: shift.isHolidayStart,
+        isHolidayEnd: shift.isHolidayEnd,
+        isAVAShift: shift.isAVAShift,
       };
       recordsToCalculate = recordsToCalculate.map(r => r.id === editingId ? currentFormRecord : r);
     }
@@ -3033,9 +3095,16 @@ function MainApp() {
                         </div>
                         <div className="w-px h-8 bg-slate-100" />
                         <div>
-                          <p className="text-[9px] text-slate-400 uppercase font-bold">Extras Registradas</p>
+                          <p className="text-[9px] text-slate-400 uppercase font-bold">Extras</p>
                           <p className="text-lg font-mono font-bold text-amber-600">
                             {results.all.totalExtraHours.toFixed(1)}
+                          </p>
+                        </div>
+                        <div className="w-px h-8 bg-slate-100" />
+                        <div>
+                          <p className="text-[9px] text-slate-400 uppercase font-bold">Total Horas</p>
+                          <p className="text-lg font-mono font-bold text-slate-800">
+                            {(results.all.totalRegularHours + results.all.totalExtraHours).toFixed(1)}
                           </p>
                         </div>
                       </div>
