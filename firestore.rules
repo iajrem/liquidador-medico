@@ -51,6 +51,17 @@ service cloud.firestore {
     //   - status: string (required, enum: active, archived)
     //   - createdAt: string (optional, ISO 8601)
     //
+    // Collection: users/{userId}/trisemanas
+    // Document ID: {trisemanaId}
+    // Fields:
+    //   - id: string (required)
+    //   - userId: string (required)
+    //   - name: string (optional)
+    //   - startDate: string (required)
+    //   - endDate: string (required)
+    //   - maxHours: number (required)
+    //   - createdAt: string (optional, ISO 8601)
+    //
     // ===============================================================
 
     // ===============================================================
@@ -121,6 +132,15 @@ service cloud.firestore {
              (!('totalGross' in data) || data.totalGross is number);
     }
 
+    function isValidTrisemana(data) {
+      return data.id is string && data.id.size() > 0 &&
+             data.userId is string && data.userId.size() > 0 &&
+             (!('name' in data) || (data.name is string && data.name.size() < 100)) &&
+             data.startDate is string && isValidDateString(data.startDate) &&
+             data.endDate is string && isValidDateString(data.endDate) &&
+             data.maxHours is number && data.maxHours >= 0;
+    }
+
     // ===============================================================
     // Match Rules
     // ===============================================================
@@ -149,6 +169,13 @@ service cloud.firestore {
         allow read: if isOwner(userId);
         allow create: if isOwner(userId) && hasRequiredFields(['id', 'userId', 'startDate', 'endDate', 'status']) && isValidPeriod(request.resource.data);
         allow update: if isOwner(userId) && isValidPeriod(request.resource.data);
+        allow delete: if isOwner(userId);
+      }
+
+      match /trisemanas/{trisemanaId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && hasRequiredFields(['id', 'userId', 'startDate', 'endDate', 'maxHours']) && isValidTrisemana(request.resource.data);
+        allow update: if isOwner(userId) && isValidTrisemana(request.resource.data);
         allow delete: if isOwner(userId);
       }
     }

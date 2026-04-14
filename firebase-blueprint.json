@@ -87,6 +87,21 @@
         "totalGross": { "type": "number" }
       },
       "required": ["id", "userId", "startDate", "endDate", "status"]
+    },
+    "Trisemana": {
+      "title": "Trisemana",
+      "description": "A 3-week interval with a maximum hour limit for extra hour calculations",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" },
+        "maxHours": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "startDate", "endDate", "maxHours"]
     }
   },
   "firestore": {
@@ -105,6 +120,10 @@
     "/users/{userId}/periods/{periodId}": {
       "schema": "BillingPeriod",
       "description": "Billing periods for a specific user"
+    },
+    "/users/{userId}/trisemanas/{trisemanaId}": {
+      "schema": "Trisemana",
+      "description": "Trisemanas for a specific user"
     }
   }
 }
