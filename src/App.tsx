@@ -302,6 +302,7 @@ interface ShiftRecord {
   isAVAShift: boolean;
   isVirtualShift: boolean;
   extraHoursType?: 'consultation' | 'avaVirtual';
+  trisemanaId?: string | null;
 }
 
 // --- Constants ---
@@ -553,13 +554,13 @@ const calculatePeriodTotals = (
   
   // Find all trisemanas that could affect the current records
   const relevantTrisemanas = trisemanas
-    .filter(t => records.some(r => r.date >= t.startDate && r.date <= t.endDate))
+    .filter(t => records.some(r => r.trisemanaId === t.id || (!r.trisemanaId && r.date >= t.startDate && r.date <= t.endDate)))
     .sort((a, b) => a.startDate.localeCompare(b.startDate));
 
   relevantTrisemanas.forEach(trisemana => {
     // Get ALL records in this trisemana across all time/periods
     const trisemanaRecords = allRecords
-      .filter(r => r.date >= trisemana.startDate && r.date <= trisemana.endDate)
+      .filter(r => r.trisemanaId === trisemana.id || (!r.trisemanaId && r.date >= trisemana.startDate && r.date <= trisemana.endDate))
       .sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
     
     let cumulative = 0;
@@ -903,6 +904,7 @@ function MainApp() {
     isExtraShift: false,
     extraHoursType: 'consultation'
   });
+  const [manualTrisemanaId, setManualTrisemanaId] = useState<string | null>(null);
   const [quantities, setQuantities] = useState<Quantities>({
     hours: { day: 0, night: 0, holidayDay: 0, holidayNight: 0, extraDay: 0, extraNight: 0, extraHolidayDay: 0, extraHolidayNight: 0 },
     ava: { day: 0, night: 0, holidayDay: 0, holidayNight: 0, extraDay: 0, extraNight: 0, extraHolidayDay: 0, extraHolidayNight: 0 },
@@ -1148,7 +1150,10 @@ function MainApp() {
     if (editingId && viewingArchive) return null;
 
     // 1. Find if this shift falls into a trisemana
-    const trisemana = trisemanas.find(t => shift.date >= t.startDate && shift.date <= t.endDate);
+    const trisemana = manualTrisemanaId 
+      ? trisemanas.find(t => t.id === manualTrisemanaId)
+      : trisemanas.find(t => shift.date >= t.startDate && shift.date <= t.endDate);
+    
     let threshold = 0;
     let cumulative = 0;
 
@@ -1434,6 +1439,7 @@ function MainApp() {
       isAVAShift: shift.isAVAShift,
       isVirtualShift: shift.isVirtualShift,
       extraHoursType: shift.extraHoursType,
+      trisemanaId: manualTrisemanaId || autoCalculatedDistribution?.h.trisemanaId || null,
     };
 
     if (viewingArchive) {
@@ -1459,6 +1465,7 @@ function MainApp() {
       });
 
       setEditingId(null);
+      setManualTrisemanaId(null);
       setShift({
         date: new Date().toISOString().split('T')[0],
         startTime: '07:00',
@@ -1484,6 +1491,7 @@ function MainApp() {
       await setDoc(doc(db, path), newRecord);
       // Reset form to initial values
       setEditingId(null);
+      setManualTrisemanaId(null);
       setShift({
         date: new Date().toISOString().split('T')[0],
         startTime: '07:00',
@@ -1721,6 +1729,7 @@ function MainApp() {
       isExtraShift: record.isExtraShift || false,
       extraHoursType: record.extraHoursType || 'consultation'
     });
+    setManualTrisemanaId(record.trisemanaId || null);
     setQuantities({
       hours: { ...record.hours },
       ava: { ...record.ava },
@@ -2354,71 +2363,82 @@ function MainApp() {
                 </div>
                 <button 
                   onClick={() => setShowTrisemanaModal(true)}
-                  className="p-1.5 bg-white text-amber-600 rounded-lg hover:bg-indigo-100 transition-colors shadow-sm"
+                  className="p-1.5 bg-white text-amber-600 rounded-lg hover:bg-amber-100 transition-colors shadow-sm border border-amber-200"
                   title="Nueva Trisemana"
                 >
                   <Plus className="w-3.5 h-3.5" />
                 </button>
               </div>
               
-              <div className="space-y-3">
-                <div className="space-y-1">
-                  <label className="text-[9px] font-bold text-amber-400 uppercase ml-1">Trisemana Activa</label>
-                  {(() => {
-                    const active = trisemanas.find(t => t.status === 'active');
-                    return active ? (
-                      <div className="p-3 bg-white border border-amber-200 rounded-xl shadow-sm relative group">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-xs font-bold text-slate-700 truncate pr-4">{active.name}</span>
-                          <div className="flex items-center gap-2">
-                            <button 
-                              onClick={() => deleteTrisemana(active.id)}
-                              className="p-1 text-slate-300 hover:text-rose-500 transition-colors"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
+              <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
+                {trisemanas.length === 0 ? (
+                  <button 
+                    onClick={() => setShowTrisemanaModal(true)}
+                    className="w-full py-3 bg-white border border-dashed border-amber-200 text-amber-600 text-xs font-bold rounded-xl hover:bg-amber-100 transition-all flex items-center justify-center gap-2"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Nueva Trisemana
+                  </button>
+                ) : (
+                  trisemanas.sort((a, b) => b.startDate.localeCompare(a.startDate)).map(t => (
+                    <div 
+                      key={t.id}
+                      className={`p-3 rounded-xl border transition-all ${
+                        t.status === 'active' 
+                          ? 'bg-amber-50 border-amber-200 shadow-sm' 
+                          : 'bg-white border-slate-100 opacity-70 hover:opacity-100'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-xs font-bold ${t.status === 'active' ? 'text-amber-900' : 'text-slate-700'}`}>
+                            {t.name}
+                          </span>
+                          {t.status === 'active' && (
                             <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-                          </div>
+                          )}
                         </div>
-                        <div className="flex items-center justify-between">
-                          <span className="text-[9px] text-slate-500">{active.startDate} al {active.endDate}</span>
-                          <span className="text-[9px] font-bold text-amber-600">{active.maxHours}h</span>
+                        <div className="flex items-center gap-1">
+                          {t.status === 'archived' && (
+                            <button 
+                              onClick={async () => {
+                                if (!user) return;
+                                try {
+                                  // Archive current active
+                                  const active = trisemanas.find(tri => tri.status === 'active');
+                                  if (active) {
+                                    await updateDoc(doc(db, `users/${user.uid}/trisemanas/${active.id}`), { status: 'archived' });
+                                  }
+                                  // Activate this one
+                                  await updateDoc(doc(db, `users/${user.uid}/trisemanas/${t.id}`), { status: 'active' });
+                                  showToast(`Trisemana "${t.name}" activada.`);
+                                } catch (error) {
+                                  handleFirestoreError(error, OperationType.UPDATE, 'trisemanas');
+                                }
+                              }}
+                              className="p-1 text-slate-300 hover:text-amber-500 transition-colors"
+                              title="Activar"
+                            >
+                              <CheckCircle2 className="w-3 h-3" />
+                            </button>
+                          )}
+                          <button 
+                            onClick={() => deleteTrisemana(t.id)}
+                            className="p-1 text-slate-300 hover:text-rose-500 transition-colors"
+                            title="Eliminar"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
                         </div>
                       </div>
-                    ) : (
-                      <button 
-                        onClick={() => setShowTrisemanaModal(true)}
-                        className="w-full py-3 bg-white border border-dashed border-amber-200 text-amber-600 text-xs font-bold rounded-xl hover:bg-amber-100 transition-all flex items-center justify-center gap-2"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        Nueva Trisemana
-                      </button>
-                    );
-                  })()}
-                </div>
-
-                {trisemanas.filter(t => t.status === 'archived').length > 0 && (
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-bold text-slate-400 uppercase ml-1">Historial Trisemanas</label>
-                    <div className="flex gap-2">
-                      <select 
-                        onChange={(e) => {
-                          const t = trisemanas.find(tri => tri.id === e.target.value);
-                          if (t) {
-                            // Optionally do something when selecting an archived trisemana
-                          }
-                        }}
-                        className="flex-1 bg-white border border-amber-200 rounded-xl py-2 px-3 text-xs font-bold text-slate-700 focus:ring-2 focus:ring-amber-500 outline-none transition-all"
-                      >
-                        <option value="" disabled selected>Ver historial...</option>
-                        {trisemanas.filter(t => t.status === 'archived').map(t => (
-                          <option key={t.id} value={t.id}>
-                            {t.name} ({t.startDate})
-                          </option>
-                        ))}
-                      </select>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[9px] text-slate-500">{t.startDate} al {t.endDate}</span>
+                        <span className={`text-[9px] font-bold ${t.status === 'active' ? 'text-amber-600' : 'text-slate-400'}`}>
+                          {t.maxHours}h
+                        </span>
+                      </div>
                     </div>
-                  </div>
+                  ))
                 )}
               </div>
             </section>
@@ -3164,28 +3184,45 @@ function MainApp() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
-                <div className="space-y-2">
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">Fecha</label>
-                  <input 
-                    type="date" 
-                    value={shift.date}
-                    onChange={(e) => setShift({ ...shift, date: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                  />
-                  {(() => {
-                    const t = trisemanas.find(tri => shift.date >= tri.startDate && shift.date <= tri.endDate);
-                    return t ? (
-                      <div className="flex items-center gap-1.5 px-2 py-1 bg-amber-50 border border-amber-100 rounded-lg">
-                        <Clock className="w-3 h-3 text-amber-600" />
-                        <span className="text-[10px] font-bold text-amber-700 uppercase truncate">{t.name}</span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-1.5 px-2 py-1 bg-rose-50 border border-rose-100 rounded-lg animate-pulse">
-                        <AlertCircle className="w-3 h-3 text-rose-500" />
-                        <span className="text-[10px] font-bold text-rose-600 uppercase">Sin Trisemana</span>
-                      </div>
-                    );
-                  })()}
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">Fecha</label>
+                    <input 
+                      type="date" 
+                      value={shift.date}
+                      onChange={(e) => setShift({ ...shift, date: e.target.value })}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">Trisemana (Periodo)</label>
+                    <select 
+                      value={manualTrisemanaId || ""}
+                      onChange={(e) => setManualTrisemanaId(e.target.value || null)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm focus:ring-2 focus:ring-amber-500 outline-none transition-all font-bold text-slate-700"
+                    >
+                      <option value="">Auto-detectar por fecha</option>
+                      {trisemanas.map(t => (
+                        <option key={t.id} value={t.id}>{t.name} ({t.startDate})</option>
+                      ))}
+                    </select>
+                    {(() => {
+                      const t = manualTrisemanaId 
+                        ? trisemanas.find(tri => tri.id === manualTrisemanaId)
+                        : trisemanas.find(tri => shift.date >= tri.startDate && shift.date <= tri.endDate);
+                      return t ? (
+                        <div className="flex items-center gap-1.5 px-2 py-1 bg-amber-50 border border-amber-100 rounded-lg">
+                          <Clock className="w-3 h-3 text-amber-600" />
+                          <span className="text-[10px] font-bold text-amber-700 uppercase truncate">{t.name}</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1.5 px-2 py-1 bg-rose-50 border border-rose-100 rounded-lg animate-pulse">
+                          <AlertCircle className="w-3 h-3 text-rose-500" />
+                          <span className="text-[10px] font-bold text-rose-600 uppercase">Sin Trisemana</span>
+                        </div>
+                      );
+                    })()}
+                  </div>
                 </div>
 
                 <div className="space-y-2">
@@ -3227,14 +3264,17 @@ function MainApp() {
                 </div>
 
                 <div className="lg:col-span-2 flex flex-col justify-center bg-slate-50 rounded-2xl border border-dashed border-slate-200 p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase">Tipo de Turno</span>
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Atribución de Horas</span>
+                    <div className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${shift.isAVAShift ? 'bg-amber-100 text-amber-700' : 'bg-indigo-100 text-indigo-700'}`}>
+                      {shift.isAVAShift ? 'AVA/Virtual' : 'Consulta'}
+                    </div>
                   </div>
                   
-                  <div className="flex gap-2 mb-3">
+                  <div className="flex gap-2 mb-4">
                     {[
-                      { id: 'consultation', label: 'Consulta', icon: Users },
-                      { id: 'avaVirtual', label: 'AVA/Virtual', icon: TrendingUp },
+                      { id: 'consultation', label: 'Consulta', icon: Users, color: 'indigo' },
+                      { id: 'avaVirtual', label: 'AVA/Virtual', icon: TrendingUp, color: 'amber' },
                     ].map((type) => (
                       <button
                         key={type.id}
@@ -3242,7 +3282,7 @@ function MainApp() {
                           setShift({ 
                             ...shift, 
                             isAVAShift: type.id === 'avaVirtual',
-                            isVirtualShift: false, // We treat them as one now
+                            isVirtualShift: false,
                             extraHoursType: type.id as 'consultation' | 'avaVirtual'
                           });
                           if (type.id !== 'consultation') {
@@ -3253,28 +3293,31 @@ function MainApp() {
                             }));
                           }
                         }}
-                        className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-xl text-[10px] font-bold uppercase transition-all border ${
+                        className={`flex-1 flex flex-col items-center justify-center gap-2 py-3 px-2 rounded-2xl text-xs font-bold uppercase transition-all border-2 ${
                           (type.id === 'consultation' && !shift.isAVAShift) ||
                           (type.id === 'avaVirtual' && shift.isAVAShift)
-                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
-                            : 'bg-white text-slate-500 border-slate-200 hover:border-indigo-300'
+                            ? type.id === 'consultation' 
+                              ? 'bg-indigo-600 text-white border-indigo-600 shadow-md scale-[1.02]' 
+                              : 'bg-amber-500 text-white border-amber-500 shadow-md scale-[1.02]'
+                            : 'bg-white text-slate-400 border-slate-100 hover:border-slate-200'
                         }`}
                       >
-                        <type.icon className="w-3 h-3" />
+                        <type.icon className="w-5 h-5" />
                         {type.label}
                       </button>
                     ))}
                   </div>
 
-                  <div className="grid grid-cols-2 gap-x-8 gap-y-2">
-                    <div className="text-[10px] font-bold text-slate-400 uppercase">{(shift.isAVAShift || shift.isVirtualShift) ? 'AVA/VIRT ' : ''}Diurnas: <span className="text-slate-700 font-mono text-sm ml-1">{(shift.isAVAShift || shift.isVirtualShift) ? quantities.ava.day : quantities.hours.day}h</span></div>
-                    <div className="text-[10px] font-bold text-slate-400 uppercase">{(shift.isAVAShift || shift.isVirtualShift) ? 'AVA/VIRT ' : ''}Nocturnas: <span className="text-slate-700 font-mono text-sm ml-1">{(shift.isAVAShift || shift.isVirtualShift) ? quantities.ava.night : quantities.hours.night}h</span></div>
-                    <div className="text-[10px] font-bold text-slate-400 uppercase">{(shift.isAVAShift || shift.isVirtualShift) ? 'AVA/VIRT ' : ''}D-Fest: <span className="text-slate-700 font-mono text-sm ml-1">{(shift.isAVAShift || shift.isVirtualShift) ? quantities.ava.holidayDay : quantities.hours.holidayDay}h</span></div>
-                    <div className="text-[10px] font-bold text-slate-400 uppercase">{(shift.isAVAShift || shift.isVirtualShift) ? 'AVA/VIRT ' : ''}N-Fest: <span className="text-slate-700 font-mono text-sm ml-1">{(shift.isAVAShift || shift.isVirtualShift) ? quantities.ava.holidayNight : quantities.hours.holidayNight}h</span></div>
-                    {((shift.isAVAShift || shift.isVirtualShift) ? (quantities.ava.extraDay + quantities.ava.extraNight + quantities.ava.extraHolidayDay + quantities.ava.extraHolidayNight) : (quantities.hours.extraDay + quantities.hours.extraNight + quantities.hours.extraHolidayDay + quantities.hours.extraHolidayNight)) > 0 && (
-                      <div className="col-span-2 text-[10px] font-bold text-amber-500 uppercase mt-1 border-t border-amber-100 pt-1">
-                        Turno Adicional: <span className="font-mono text-sm ml-1">
-                          {(shift.isAVAShift || shift.isVirtualShift) 
+                  <div className="grid grid-cols-2 gap-x-6 gap-y-2 bg-white/50 p-3 rounded-xl border border-slate-100">
+                    <div className="text-[10px] font-bold text-slate-400 uppercase">Diurnas: <span className={`${shift.isAVAShift ? 'text-amber-600' : 'text-indigo-600'} font-mono text-sm ml-1`}>{shift.isAVAShift ? quantities.ava.day : quantities.hours.day}h</span></div>
+                    <div className="text-[10px] font-bold text-slate-400 uppercase">Nocturnas: <span className={`${shift.isAVAShift ? 'text-amber-600' : 'text-indigo-600'} font-mono text-sm ml-1`}>{shift.isAVAShift ? quantities.ava.night : quantities.hours.night}h</span></div>
+                    <div className="text-[10px] font-bold text-slate-400 uppercase">D-Fest: <span className={`${shift.isAVAShift ? 'text-amber-600' : 'text-indigo-600'} font-mono text-sm ml-1`}>{shift.isAVAShift ? quantities.ava.holidayDay : quantities.hours.holidayDay}h</span></div>
+                    <div className="text-[10px] font-bold text-slate-400 uppercase">N-Fest: <span className={`${shift.isAVAShift ? 'text-amber-600' : 'text-indigo-600'} font-mono text-sm ml-1`}>{shift.isAVAShift ? quantities.ava.holidayNight : quantities.hours.holidayNight}h</span></div>
+                    {((shift.isAVAShift) ? (quantities.ava.extraDay + quantities.ava.extraNight + quantities.ava.extraHolidayDay + quantities.ava.extraHolidayNight) : (quantities.hours.extraDay + quantities.hours.extraNight + quantities.hours.extraHolidayDay + quantities.hours.extraHolidayNight)) > 0 && (
+                      <div className="col-span-2 text-[10px] font-bold text-rose-500 uppercase mt-1 border-t border-rose-100 pt-1 flex justify-between">
+                        <span>Turno Adicional:</span>
+                        <span className="font-mono text-sm">
+                          {shift.isAVAShift 
                             ? (quantities.ava.extraDay + quantities.ava.extraNight + quantities.ava.extraHolidayDay + quantities.ava.extraHolidayNight) 
                             : (quantities.hours.extraDay + quantities.hours.extraNight + quantities.hours.extraHolidayDay + quantities.hours.extraHolidayNight)}h
                         </span>
@@ -3750,7 +3793,9 @@ function MainApp() {
                                   })()}
                                 </div>
                                 {(() => {
-                                  const t = trisemanas.find(tri => record.date >= tri.startDate && record.date <= tri.endDate);
+                                  const t = record.trisemanaId 
+                                    ? trisemanas.find(tri => tri.id === record.trisemanaId)
+                                    : trisemanas.find(tri => record.date >= tri.startDate && record.date <= tri.endDate);
                                   return t ? (
                                     <span className="text-[9px] text-amber-600 font-bold uppercase tracking-tighter flex items-center gap-1">
                                       <Clock className="w-2 h-2" /> {t.name}
