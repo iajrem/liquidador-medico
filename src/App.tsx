@@ -20,6 +20,7 @@ import {
   Wallet,
   CheckCircle2,
   Edit,
+  Edit3,
   Trash2,
   Save,
   FolderOpen,
@@ -240,6 +241,11 @@ interface Rates {
     vacationLastResetDate: string | null; // ISO date of last vacation reset
     ibcMinimo: boolean;         // If true, IBC is capped at SMMLV if gross > SMMLV
     jobTitle: string;
+    useManualRetefuente: boolean;
+    manualRetefuentePct: number;
+    usePrepagada: boolean;
+    usePensionVoluntaria: boolean;
+    useInteresesVivienda: boolean;
   };
 }
 
@@ -368,6 +374,11 @@ const DEFAULT_RATES: Rates = {
     vacationLastResetDate: null,
     ibcMinimo: false,
     jobTitle: 'MEDICO CONSULTA 2 MED',
+    useManualRetefuente: false,
+    manualRetefuentePct: 0,
+    usePrepagada: true,
+    usePensionVoluntaria: true,
+    useInteresesVivienda: true,
   }
 };
 
@@ -809,9 +820,9 @@ const calculatePeriodTotals = (
   const netIncome = totalIncomeForTax - legalDeductions;
   
   const dedDependents = rates.payroll.dependents ? Math.min(totalIncomeForTax * 0.1, 32 * uvt) : 0;
-  const dedPrepagada = Math.min(rates.payroll.prepagada, 16 * uvt);
-  const dedInteresesVivienda = Math.min(rates.payroll.interesesVivienda, 100 * uvt);
-  const dedPensionVol = Math.min(rates.payroll.pensionVoluntaria, totalIncomeForTax * 0.3, 3800 * uvt / 12);
+  const dedPrepagada = (rates.payroll.usePrepagada !== false) ? Math.min(rates.payroll.prepagada, 16 * uvt) : 0;
+  const dedInteresesVivienda = (rates.payroll.useInteresesVivienda !== false) ? Math.min(rates.payroll.interesesVivienda, 100 * uvt) : 0;
+  const dedPensionVol = (rates.payroll.usePensionVoluntaria !== false) ? Math.min(rates.payroll.pensionVoluntaria, totalIncomeForTax * 0.3, 3800 * uvt / 12) : 0;
   
   const subtotalForExempt25 = netIncome - dedDependents - dedPrepagada - dedInteresesVivienda - dedPensionVol;
   const exempt25 = Math.min(subtotalForExempt25 * 0.25, 65.8 * uvt);
@@ -824,7 +835,9 @@ const calculatePeriodTotals = (
   const baseUVT = baseGravableFinal / uvt;
   
   let retefuente = 0;
-  if (baseUVT > 95) {
+  if (rates.payroll.useManualRetefuente) {
+    retefuente = gross * (rates.payroll.manualRetefuentePct / 100);
+  } else if (baseUVT > 95) {
     if (baseUVT <= 150) retefuente = (baseUVT - 95) * 0.19 * uvt;
     else if (baseUVT <= 360) retefuente = ((baseUVT - 150) * 0.28 + 10) * uvt;
     else if (baseUVT <= 640) retefuente = ((baseUVT - 360) * 0.33 + 69) * uvt;
@@ -934,8 +947,10 @@ function MainApp() {
     maxHours: 132
   });
   const [showHelp, setShowHelp] = useState<{ title: string, content: string } | null>(null);
+  const [showTrisemanaHistory, setShowTrisemanaHistory] = useState(false);
 
   const [editingPeriod, setEditingPeriod] = useState<BillingPeriod | null>(null);
+  const [editingTrisemana, setEditingTrisemana] = useState<Trisemana | null>(null);
   const [newPeriodData, setNewPeriodData] = useState({
     name: '',
     startDate: '',
@@ -956,9 +971,33 @@ function MainApp() {
       if (snapshot.exists()) {
         const userData = snapshot.data();
         if (userData.rates) {
-          // Only update if different to avoid loops
-          if (JSON.stringify(userData.rates) !== JSON.stringify(ratesRef.current)) {
-            setRates(userData.rates);
+          let updatedRates = { ...userData.rates };
+          let changed = false;
+
+          // Migration: Ensure 2026 default billing cutoff is 29
+          if (!updatedRates.payroll.billingCutoffDay || updatedRates.payroll.billingCutoffDay === 25) {
+            updatedRates.payroll.billingCutoffDay = 29;
+            changed = true;
+          }
+
+          // Migration: Add missing fields if they don't exist
+          const missingFields = {
+            useManualRetefuente: false,
+            manualRetefuentePct: updatedRates.payroll.manualRetefuentePct || 0,
+            usePrepagada: updatedRates.payroll.usePrepagada === undefined ? true : updatedRates.payroll.usePrepagada,
+            usePensionVoluntaria: updatedRates.payroll.usePensionVoluntaria === undefined ? true : updatedRates.payroll.usePensionVoluntaria,
+            useInteresesVivienda: updatedRates.payroll.useInteresesVivienda === undefined ? true : updatedRates.payroll.useInteresesVivienda,
+          };
+
+          Object.entries(missingFields).forEach(([key, value]) => {
+            if (updatedRates.payroll[key] === undefined) {
+              updatedRates.payroll[key] = value;
+              changed = true;
+            }
+          });
+
+          if (changed || JSON.stringify(updatedRates) !== JSON.stringify(ratesRef.current)) {
+            setRates(updatedRates);
           }
         }
       } else {
@@ -1419,42 +1458,66 @@ function MainApp() {
     setShowPeriodModal(true);
   };
 
+  const openEditTrisemana = (trisemana: Trisemana) => {
+    setEditingTrisemana(trisemana);
+    setNewTrisemanaData({
+      name: trisemana.name,
+      startDate: trisemana.startDate,
+      endDate: trisemana.endDate,
+      maxHours: trisemana.maxHours
+    });
+    setShowTrisemanaModal(true);
+  };
+
   const createTrisemana = async () => {
     if (!user) return;
     
     try {
-      // Archive previous trisemanas
-      const activeTrisemanas = trisemanas.filter(t => t.status === 'active');
-      for (const t of activeTrisemanas) {
-        await updateDoc(doc(db, `users/${user.uid}/trisemanas/${t.id}`), {
-          status: 'archived'
+      if (editingTrisemana) {
+        const path = `users/${user.uid}/trisemanas/${editingTrisemana.id}`;
+        await updateDoc(doc(db, path), {
+          name: newTrisemanaData.name,
+          startDate: newTrisemanaData.startDate,
+          endDate: newTrisemanaData.endDate,
+          maxHours: newTrisemanaData.maxHours
         });
+        showToast("Trisemana actualizada con éxito.");
+      } else {
+        // Archive previous trisemanas
+        const activeTrisemanas = trisemanas.filter(t => t.status === 'active');
+        for (const t of activeTrisemanas) {
+          await updateDoc(doc(db, `users/${user.uid}/trisemanas/${t.id}`), {
+            status: 'archived'
+          });
+        }
+
+        const id = crypto.randomUUID();
+        const trisemana: Trisemana = {
+          id,
+          userId: user.uid,
+          name: newTrisemanaData.name || `Trisemana ${newTrisemanaData.startDate}`,
+          startDate: newTrisemanaData.startDate,
+          endDate: newTrisemanaData.endDate,
+          maxHours: newTrisemanaData.maxHours,
+          status: 'active',
+          createdAt: new Date().toISOString()
+        };
+
+        const path = `users/${user.uid}/trisemanas/${id}`;
+        await setDoc(doc(db, path), trisemana);
+        showToast("Trisemana creada con éxito.");
       }
 
-      const id = crypto.randomUUID();
-      const trisemana: Trisemana = {
-        id,
-        userId: user.uid,
-        name: newTrisemanaData.name || `Trisemana ${newTrisemanaData.startDate}`,
-        startDate: newTrisemanaData.startDate,
-        endDate: newTrisemanaData.endDate,
-        maxHours: newTrisemanaData.maxHours,
-        status: 'active',
-        createdAt: new Date().toISOString()
-      };
-
-      const path = `users/${user.uid}/trisemanas/${id}`;
-      await setDoc(doc(db, path), trisemana);
       setShowTrisemanaModal(false);
+      setEditingTrisemana(null);
       setNewTrisemanaData({
         name: '',
         startDate: new Date().toISOString().split('T')[0],
         endDate: new Date(Date.now() + 21 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
         maxHours: 132
       });
-      showToast("Trisemana creada con éxito.");
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `users/${user.uid}/trisemanas`);
+      handleFirestoreError(error, editingTrisemana ? OperationType.UPDATE : OperationType.CREATE, `users/${user.uid}/trisemanas`);
     }
   };
 
@@ -2417,7 +2480,10 @@ function MainApp() {
                   <h2 className="text-xs font-bold uppercase tracking-widest">Trisemanas</h2>
                 </div>
                 <button 
-                  onClick={() => setShowTrisemanaModal(true)}
+                  onClick={() => {
+                    setEditingTrisemana(null);
+                    setShowTrisemanaModal(true);
+                  }}
                   className="p-1.5 bg-white text-amber-600 rounded-lg hover:bg-amber-100 transition-colors shadow-sm border border-amber-200"
                   title="Nueva Trisemana"
                 >
@@ -2425,61 +2491,43 @@ function MainApp() {
                 </button>
               </div>
               
-              <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
-                {trisemanas.length === 0 ? (
+              <div className="space-y-3">
+                {/* Active Trisemana */}
+                {trisemanas.filter(t => t.status === 'active').length === 0 ? (
                   <button 
-                    onClick={() => setShowTrisemanaModal(true)}
+                    onClick={() => {
+                      setEditingTrisemana(null);
+                      setShowTrisemanaModal(true);
+                    }}
                     className="w-full py-3 bg-white border border-dashed border-amber-200 text-amber-600 text-xs font-bold rounded-xl hover:bg-amber-100 transition-all flex items-center justify-center gap-2"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     Nueva Trisemana
                   </button>
                 ) : (
-                  trisemanas.sort((a, b) => b.startDate.localeCompare(a.startDate)).map(t => (
+                  trisemanas.filter(t => t.status === 'active').map(t => (
                     <div 
                       key={t.id}
-                      className={`p-3 rounded-xl border transition-all ${
-                        t.status === 'active' 
-                          ? 'bg-amber-50 border-amber-200 shadow-sm' 
-                          : 'bg-white border-slate-100 opacity-70 hover:opacity-100'
-                      }`}
+                      className="p-3 bg-amber-50 border border-amber-200 rounded-xl shadow-sm"
                     >
                       <div className="flex items-center justify-between mb-1">
                         <div className="flex items-center gap-2">
-                          <span className={`text-xs font-bold ${t.status === 'active' ? 'text-amber-900' : 'text-slate-700'}`}>
+                          <span className="text-xs font-bold text-amber-900 truncate max-w-[120px]">
                             {t.name}
                           </span>
-                          {t.status === 'active' && (
-                            <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-                          )}
+                          <div className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
                         </div>
                         <div className="flex items-center gap-1">
-                          {t.status === 'archived' && (
-                            <button 
-                              onClick={async () => {
-                                if (!user) return;
-                                try {
-                                  // Archive current active
-                                  const active = trisemanas.find(tri => tri.status === 'active');
-                                  if (active) {
-                                    await updateDoc(doc(db, `users/${user.uid}/trisemanas/${active.id}`), { status: 'archived' });
-                                  }
-                                  // Activate this one
-                                  await updateDoc(doc(db, `users/${user.uid}/trisemanas/${t.id}`), { status: 'active' });
-                                  showToast(`Trisemana "${t.name}" activada.`);
-                                } catch (error) {
-                                  handleFirestoreError(error, OperationType.UPDATE, 'trisemanas');
-                                }
-                              }}
-                              className="p-1 text-slate-300 hover:text-amber-500 transition-colors"
-                              title="Activar"
-                            >
-                              <CheckCircle2 className="w-3 h-3" />
-                            </button>
-                          )}
+                          <button 
+                            onClick={() => openEditTrisemana(t)}
+                            className="p-1 text-amber-400 hover:text-amber-600 transition-colors"
+                            title="Editar"
+                          >
+                            <Edit3 className="w-3 h-3" />
+                          </button>
                           <button 
                             onClick={() => deleteTrisemana(t.id)}
-                            className="p-1 text-slate-300 hover:text-rose-500 transition-colors"
+                            className="p-1 text-amber-400 hover:text-rose-500 transition-colors"
                             title="Eliminar"
                           >
                             <Trash2 className="w-3 h-3" />
@@ -2487,13 +2535,84 @@ function MainApp() {
                         </div>
                       </div>
                       <div className="flex items-center justify-between">
-                        <span className="text-[9px] text-slate-500">{t.startDate} al {t.endDate}</span>
-                        <span className={`text-[9px] font-bold ${t.status === 'active' ? 'text-amber-600' : 'text-slate-400'}`}>
-                          {t.maxHours}h
-                        </span>
+                        <span className="text-[9px] text-amber-700">{t.startDate} al {t.endDate}</span>
+                        <span className="text-[9px] font-bold text-amber-600">{t.maxHours}h</span>
                       </div>
                     </div>
                   ))
+                )}
+
+                {/* Histórico Colapsable */}
+                {trisemanas.filter(t => t.status === 'archived').length > 0 && (
+                  <div className="space-y-1">
+                    <button 
+                      onClick={() => setShowTrisemanaHistory(!showTrisemanaHistory)}
+                      className="w-full flex items-center justify-between px-2 py-1 hover:bg-amber-100/50 rounded-lg transition-all group"
+                    >
+                      <div className="flex items-center gap-2">
+                        <History className="w-3 h-3 text-amber-400" />
+                        <span className="text-[10px] font-bold text-amber-500 uppercase">Historial</span>
+                        <span className="bg-amber-100 text-amber-600 text-[8px] px-1.5 py-0.5 rounded-full font-bold">
+                          {trisemanas.filter(t => t.status === 'archived').length}
+                        </span>
+                      </div>
+                      <ChevronDown className={`w-3 h-3 text-amber-400 transition-transform ${showTrisemanaHistory ? 'rotate-180' : ''}`} />
+                    </button>
+
+                    {showTrisemanaHistory && (
+                      <div className="space-y-2 mt-1 max-h-[200px] overflow-y-auto pr-1 custom-scrollbar animate-in fade-in slide-in-from-top-1">
+                        {trisemanas.filter(t => t.status === 'archived').sort((a, b) => b.startDate.localeCompare(a.startDate)).map(t => (
+                          <div 
+                            key={t.id}
+                            className="p-2.5 bg-white border border-slate-100 rounded-xl opacity-70 hover:opacity-100 transition-all"
+                          >
+                            <div className="flex items-center justify-between mb-0.5">
+                              <span className="text-[10px] font-bold text-slate-700 truncate max-w-[100px]">{t.name}</span>
+                              <div className="flex items-center gap-1">
+                                <button 
+                                  onClick={async () => {
+                                    if (!user) return;
+                                    try {
+                                      const active = trisemanas.find(tri => tri.status === 'active');
+                                      if (active) {
+                                        await updateDoc(doc(db, `users/${user.uid}/trisemanas/${active.id}`), { status: 'archived' });
+                                      }
+                                      await updateDoc(doc(db, `users/${user.uid}/trisemanas/${t.id}`), { status: 'active' });
+                                      showToast(`Trisemana "${t.name}" activada.`);
+                                    } catch (error) {
+                                      handleFirestoreError(error, OperationType.UPDATE, 'trisemanas');
+                                    }
+                                  }}
+                                  className="p-0.5 text-slate-400 hover:text-amber-500 transition-colors"
+                                  title="Re-activar"
+                                >
+                                  <CheckCircle2 className="w-2.5 h-2.5" />
+                                </button>
+                                <button 
+                                  onClick={() => openEditTrisemana(t)}
+                                  className="p-0.5 text-slate-400 hover:text-indigo-500 transition-colors"
+                                  title="Editar"
+                                >
+                                  <Edit3 className="w-2.5 h-2.5" />
+                                </button>
+                                <button 
+                                  onClick={() => deleteTrisemana(t.id)}
+                                  className="p-0.5 text-slate-400 hover:text-rose-500 transition-colors"
+                                  title="Eliminar"
+                                >
+                                  <Trash2 className="w-2.5 h-2.5" />
+                                </button>
+                              </div>
+                            </div>
+                            <div className="flex items-center justify-between text-[8px] text-slate-400">
+                              <span>{t.startDate} - {t.endDate}</span>
+                              <span className="font-bold">{t.maxHours}h</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             </section>
@@ -2944,15 +3063,26 @@ function MainApp() {
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1">
-                        Medicina Prepagada ($)
-                        <button 
-                          onClick={() => setShowHelp(HELP_CONTENT.prepagada)}
-                          className="hover:text-indigo-600 transition-colors"
-                        >
-                          <Info className="w-3 h-3 text-slate-400" />
-                        </button>
-                      </label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase flex items-center gap-1">
+                          Medicina Prepagada ($)
+                          <button 
+                            onClick={() => setShowHelp(HELP_CONTENT.prepagada)}
+                            className="hover:text-indigo-600 transition-colors"
+                          >
+                            <Info className="w-3 h-3 text-slate-400" />
+                          </button>
+                        </label>
+                        <input 
+                          type="checkbox"
+                          checked={rates.payroll.usePrepagada}
+                          onChange={(e) => setRates({
+                            ...rates,
+                            payroll: { ...rates.payroll, usePrepagada: e.target.checked }
+                          })}
+                          className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                        />
+                      </div>
                       <input 
                         type="number"
                         value={rates.payroll.prepagada}
@@ -2960,19 +3090,31 @@ function MainApp() {
                           ...rates,
                           payroll: { ...rates.payroll, prepagada: Number(e.target.value) }
                         })}
-                        className="w-full bg-white border border-slate-200 rounded-xl py-2 px-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono"
+                        disabled={!rates.payroll.usePrepagada}
+                        className={`w-full bg-white border border-slate-200 rounded-xl py-2 px-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono ${!rates.payroll.usePrepagada ? 'opacity-50 grayscale' : ''}`}
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1">
-                        Intereses de Vivienda ($)
-                        <button 
-                          onClick={() => setShowHelp(HELP_CONTENT.interesesVivienda)}
-                          className="hover:text-indigo-600 transition-colors"
-                        >
-                          <Info className="w-3 h-3 text-slate-400" />
-                        </button>
-                      </label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase flex items-center gap-1">
+                          Intereses de Vivienda ($)
+                          <button 
+                            onClick={() => setShowHelp(HELP_CONTENT.interesesVivienda)}
+                            className="hover:text-indigo-600 transition-colors"
+                          >
+                            <Info className="w-3 h-3 text-slate-400" />
+                          </button>
+                        </label>
+                        <input 
+                          type="checkbox"
+                          checked={rates.payroll.useInteresesVivienda}
+                          onChange={(e) => setRates({
+                            ...rates,
+                            payroll: { ...rates.payroll, useInteresesVivienda: e.target.checked }
+                          })}
+                          className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                        />
+                      </div>
                       <input 
                         type="number"
                         value={rates.payroll.interesesVivienda}
@@ -2980,19 +3122,31 @@ function MainApp() {
                           ...rates,
                           payroll: { ...rates.payroll, interesesVivienda: Number(e.target.value) }
                         })}
-                        className="w-full bg-white border border-slate-200 rounded-xl py-2 px-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono"
+                        disabled={!rates.payroll.useInteresesVivienda}
+                        className={`w-full bg-white border border-slate-200 rounded-xl py-2 px-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono ${!rates.payroll.useInteresesVivienda ? 'opacity-50 grayscale' : ''}`}
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 flex items-center gap-1">
-                        Pensión Voluntaria ($)
-                        <button 
-                          onClick={() => setShowHelp(HELP_CONTENT.pensionVoluntaria)}
-                          className="hover:text-indigo-600 transition-colors"
-                        >
-                          <Info className="w-3 h-3 text-slate-400" />
-                        </button>
-                      </label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase flex items-center gap-1">
+                          Pensión Voluntaria ($)
+                          <button 
+                            onClick={() => setShowHelp(HELP_CONTENT.pensionVoluntaria)}
+                            className="hover:text-indigo-600 transition-colors"
+                          >
+                            <Info className="w-3 h-3 text-slate-400" />
+                          </button>
+                        </label>
+                        <input 
+                          type="checkbox"
+                          checked={rates.payroll.usePensionVoluntaria}
+                          onChange={(e) => setRates({
+                            ...rates,
+                            payroll: { ...rates.payroll, usePensionVoluntaria: e.target.checked }
+                          })}
+                          className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                        />
+                      </div>
                       <input 
                         type="number"
                         value={rates.payroll.pensionVoluntaria}
@@ -3000,17 +3154,62 @@ function MainApp() {
                           ...rates,
                           payroll: { ...rates.payroll, pensionVoluntaria: Number(e.target.value) }
                         })}
-                        className="w-full bg-white border border-slate-200 rounded-xl py-2 px-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono"
+                        disabled={!rates.payroll.usePensionVoluntaria}
+                        className={`w-full bg-white border border-slate-200 rounded-xl py-2 px-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono ${!rates.payroll.usePensionVoluntaria ? 'opacity-50 grayscale' : ''}`}
                       />
                     </div>
                     <div className="h-px bg-slate-200 my-2" />
-                    <div className="p-3 bg-indigo-50 rounded-xl border border-indigo-100 space-y-2">
+                    <div className="p-3 bg-indigo-50 rounded-xl border border-indigo-100 space-y-3">
                       <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-bold text-indigo-600 uppercase">Retención Estimada</span>
-                        <span className="text-xs font-bold text-indigo-700">{formatCurrency(results.all.retefuente)}</span>
+                        <div className="flex flex-col">
+                          <span className="text-[10px] font-bold text-indigo-600 uppercase">Retención en Fuente</span>
+                          <span className="text-[9px] text-indigo-400 italic">Manual o Automática</span>
+                        </div>
+                        <input 
+                          type="checkbox"
+                          checked={rates.payroll.useManualRetefuente}
+                          onChange={(e) => setRates({
+                            ...rates,
+                            payroll: { ...rates.payroll, useManualRetefuente: e.target.checked }
+                          })}
+                          className="w-4 h-4 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500"
+                        />
                       </div>
+                      
+                      {rates.payroll.useManualRetefuente ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between bg-white p-2 rounded-lg border border-indigo-100">
+                            <span className="text-[10px] font-bold text-slate-500 uppercase">% Fijo Mensual</span>
+                            <div className="flex items-center gap-1">
+                              <input 
+                                type="number"
+                                step="0.01"
+                                value={rates.payroll.manualRetefuentePct}
+                                onChange={(e) => setRates({
+                                  ...rates,
+                                  payroll: { ...rates.payroll, manualRetefuentePct: Number(e.target.value) }
+                                })}
+                                className="w-16 bg-transparent text-right text-xs font-bold text-indigo-700 outline-none"
+                              />
+                              <span className="text-xs font-bold text-indigo-700">%</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between text-indigo-800">
+                            <span className="text-[10px] font-medium">Equivale a:</span>
+                            <span className="text-xs font-bold">{formatCurrency(results.all.retefuente)}</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-indigo-600 uppercase">Calculada por Ley</span>
+                          <span className="text-xs font-bold text-indigo-700">{formatCurrency(results.all.retefuente)}</span>
+                        </div>
+                      )}
+                      
                       <p className="text-[9px] text-indigo-400 italic leading-tight">
-                        Calculada sobre el Ingreso Salarial actual aplicando tus parámetros manuales y el tope del 40%.
+                        {rates.payroll.useManualRetefuente 
+                          ? "Aplicando porcentaje manual fijo sobre el total bruto."
+                          : "Calculada automáticamente sobre la base gravable neta (Art. 383)."}
                       </p>
                     </div>
                     <div className="h-px bg-slate-200 my-2" />
@@ -3076,29 +3275,6 @@ function MainApp() {
                         {formatCurrency(results.all.avg6)}
                       </div>
                       <p className="text-[9px] text-indigo-400 mt-1 italic">Calculado automáticamente del historial</p>
-                    </div>
-                  </div>
-
-                  <div className="mt-6 pt-6 border-t border-indigo-100">
-                    <div className="flex items-center justify-between p-4 bg-indigo-50 rounded-2xl border border-indigo-100">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest">Aportar sobre el Mínimo</span>
-                        <button 
-                          onClick={() => setShowHelp(HELP_CONTENT.ibcMinimo)}
-                          className="text-indigo-400 hover:text-indigo-600 transition-colors"
-                        >
-                          <Info className="w-3 h-3" />
-                        </button>
-                      </div>
-                      <button
-                        onClick={() => setRates({
-                          ...rates,
-                          payroll: { ...rates.payroll, ibcMinimo: !rates.payroll.ibcMinimo }
-                        })}
-                        className={`w-10 h-5 rounded-full transition-all relative ${rates.payroll.ibcMinimo ? 'bg-indigo-600' : 'bg-slate-300'}`}
-                      >
-                        <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${rates.payroll.ibcMinimo ? 'right-1' : 'left-1'}`} />
-                      </button>
                     </div>
                   </div>
                 </div>
@@ -4889,10 +5065,13 @@ function MainApp() {
               <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-amber-600 text-white">
                 <div className="flex items-center gap-3">
                   <Clock className="w-5 h-5" />
-                  <h3 className="font-bold">Nueva Trisemana</h3>
+                  <h3 className="font-bold">{editingTrisemana ? 'Editar Trisemana' : 'Nueva Trisemana'}</h3>
                 </div>
                 <button 
-                  onClick={() => setShowTrisemanaModal(false)} 
+                  onClick={() => {
+                    setShowTrisemanaModal(false);
+                    setEditingTrisemana(null);
+                  }} 
                   className="p-1 hover:bg-white/20 rounded-lg transition-colors"
                 >
                   <X className="w-5 h-5" />
@@ -4901,7 +5080,7 @@ function MainApp() {
               
               <div className="p-6 space-y-6">
                 <p className="text-sm text-slate-500 leading-relaxed">
-                  Define un intervalo de 3 semanas y su tope de horas. Las horas que excedan este tope se calcularán con recargos de horas extra.
+                  {editingTrisemana ? 'Actualiza los datos de la trisemana seleccionada.' : 'Define un intervalo de 3 semanas y su tope de horas. Las horas que excedan este tope se calcularán con recargos de horas extra.'}
                 </p>
                 
                 <div className="space-y-4">
@@ -4956,7 +5135,7 @@ function MainApp() {
                   className="w-full py-4 bg-amber-600 text-white font-bold rounded-2xl hover:bg-amber-700 transition-all shadow-lg shadow-amber-200 flex items-center justify-center gap-2"
                 >
                   <CheckCircle2 className="w-5 h-5" />
-                  Crear Trisemana
+                  {editingTrisemana ? 'Guardar Cambios' : 'Crear Trisemana'}
                 </button>
               </div>
             </motion.div>
