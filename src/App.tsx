@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, Component, ErrorInfo, ReactNode } from 'react';
 import { 
   Calculator, 
   Stethoscope, 
@@ -70,7 +70,6 @@ import {
   OperationType,
   User
 } from './firebase';
-import { Component, ErrorInfo, ReactNode } from 'react';
 
 import { HELP_CONTENT } from './constants/helpContent';
 import { useAuth } from './hooks/useAuth';
@@ -402,78 +401,103 @@ const formatCurrency = (value: number) => {
   }).format(value);
 };
 
-export default function App() {
-  return (
-    <ErrorBoundary>
-      <MainApp />
-    </ErrorBoundary>
-  );
-}
+// Utility to ensure a rates object is fully populated and up-to-date with 2026 surcharges
+const normalizeRates = (rates: any): Rates => {
+  return {
+    ...DEFAULT_RATES,
+    ...rates,
+    base: { 
+      ...DEFAULT_RATES.base, 
+      ...(rates?.base || {}) 
+    },
+    surcharges: { ...SURCHARGES_2026 }, // Always enforce current legal surcharges
+    hourly: { 
+      ...DEFAULT_RATES.hourly, 
+      ...(rates?.hourly || {}) 
+    },
+    ava: { 
+      ...DEFAULT_RATES.ava, 
+      ...(rates?.ava || {}) 
+    },
+    patient: { 
+      ...DEFAULT_RATES.patient, 
+      ...(rates?.patient || {}) 
+    },
+    payroll: { 
+      ...DEFAULT_RATES.payroll, 
+      ...(rates?.payroll || {}) 
+    }
+  };
+};
 
-// --- Helper Functions ---
+// --- Main Application Component ---
 interface ShiftDistribution {
   ord: { day: number; night: number; holidayDay: number; holidayNight: number };
   extra: { day: number; night: number; holidayDay: number; holidayNight: number };
 }
 
-const calculateShiftValue = (record: ShiftRecord, rates: Rates, dist: ShiftDistribution) => {
+const calculateShiftValue = (record: ShiftRecord, rates: Rates, dist: any) => {
   if (!dist) return { base: 0, service: 0, extraSurcharge: 0, avaVirtual: 0 };
 
-  const h = rates.hourly;
-  const a = rates.ava;
-  const p = rates.patient;
+  const r = normalizeRates(rates);
+  const h = r.hourly;
+  const a = r.ava;
+  const p = r.patient;
 
-  // 1. Calculate Ordinary Part
-  let ordBasePart = 0;
-  let ordServicePart = 0;
-  let ordAVAPart = 0;
+  let basePart = 0;
+  let servicePart = 0;
+  let avaPart = 0;
 
-  if (record.isAVAShift || record.isVirtualShift) {
-    ordAVAPart = (dist.ord.day * a.day) + 
-                 (dist.ord.night * a.night) + 
-                 (dist.ord.holidayDay * a.holidayDay) + 
-                 (dist.ord.holidayNight * a.holidayNight);
+  const isMainAlt = record.isAVAShift || record.isVirtualShift;
+  const extraType = record.extraHoursType || (isMainAlt ? 'avaVirtual' : 'consultation');
+  const isExtraAlt = extraType === 'avaVirtual';
+
+  // 1. Service Part
+  if (record.applyPatients) {
+    if (!isMainAlt) {
+      servicePart = (record.patients.day * p.day) + 
+                    (record.patients.night * p.night) + 
+                    (record.patients.holidayDay * p.holidayDay) + 
+                    (record.patients.holidayNight * p.holidayNight);
+    }
   } else {
-    ordBasePart = (dist.ord.day * h.day) + 
-                  (dist.ord.night * h.night) + 
-                  (dist.ord.holidayDay * h.holidayDay) + 
-                  (dist.ord.holidayNight * h.holidayNight);
-    
-    ordServicePart = (dist.ord.day * p.day) + 
-                     (dist.ord.night * p.night) + 
-                     (dist.ord.holidayDay * p.holidayDay) + 
-                     (dist.ord.holidayNight * p.holidayNight);
+    // Hourly service
+    const servDay = (isMainAlt ? 0 : dist.ord.day) + (isExtraAlt ? 0 : dist.extra.day);
+    const servNight = (isMainAlt ? 0 : dist.ord.night) + (isExtraAlt ? 0 : dist.extra.night);
+    const servHolD = (isMainAlt ? 0 : dist.ord.holidayDay) + (isExtraAlt ? 0 : dist.extra.holidayDay);
+    const servHolN = (isMainAlt ? 0 : dist.ord.holidayNight) + (isExtraAlt ? 0 : dist.extra.holidayNight);
+    servicePart = (servDay * p.day) + (servNight * p.night) + (servHolD * p.holidayDay) + (servHolN * p.holidayNight);
   }
 
-  // 2. Calculate Extra Part
-  let extraBasePart = 0;
-  let extraSurchargePart = 0;
-  let extraAVAPart = 0;
+  // 2. Base Part (Consultation)
+  basePart += (isMainAlt ? 0 : dist.ord.day) * h.day +
+              (isMainAlt ? 0 : dist.ord.night) * h.night +
+              (isMainAlt ? 0 : dist.ord.holidayDay) * h.holidayDay +
+              (isMainAlt ? 0 : dist.ord.holidayNight) * h.holidayNight;
+  
+  basePart += (isExtraAlt ? 0 : dist.extra.day) * h.extraDay +
+              (isExtraAlt ? 0 : dist.extra.night) * h.extraNight +
+              (isExtraAlt ? 0 : dist.extra.holidayDay) * h.extraHolidayDay +
+              (isExtraAlt ? 0 : dist.extra.holidayNight) * h.extraHolidayNight;
 
-  const extraType = record.extraHoursType || (record.isAVAShift ? 'avaVirtual' : 'consultation');
+  // 3. AVA Part
+  avaPart += (isMainAlt ? dist.ord.day : 0) * a.day +
+             (isMainAlt ? dist.ord.night : 0) * a.night +
+             (isMainAlt ? dist.ord.holidayDay : 0) * a.holidayDay +
+             (isMainAlt ? dist.ord.holidayNight : 0) * a.holidayNight;
 
-  if (extraType === 'avaVirtual') {
-    extraAVAPart = (dist.extra.day * a.extraDay) + 
-                   (dist.extra.night * a.extraNight) + 
-                   (dist.extra.holidayDay * a.extraHolidayDay) + 
-                   (dist.extra.holidayNight * a.extraHolidayNight);
-  } else {
-    extraBasePart = (dist.extra.day * h.extraDay) + 
-                    (dist.extra.night * h.extraNight) + 
-                    (dist.extra.holidayDay * h.extraHolidayDay) + 
-                    (dist.extra.holidayNight * h.extraHolidayNight);
-  }
+  avaPart += (isExtraAlt ? dist.extra.day : 0) * a.extraDay +
+             (isExtraAlt ? dist.extra.night : 0) * a.extraNight +
+             (isExtraAlt ? dist.extra.holidayDay : 0) * a.extraHolidayDay +
+             (isExtraAlt ? dist.extra.holidayNight : 0) * a.extraHolidayNight;
 
-  return { 
-    base: ordBasePart + extraBasePart, 
-    service: ordServicePart, 
-    extraSurcharge: extraSurchargePart, // This is now included in the extra rates
-    avaVirtual: ordAVAPart + extraAVAPart 
-  };
+  return { base: basePart, service: servicePart, extraSurcharge: 0, avaVirtual: avaPart };
 };
 
 // --- Pure Calculation Logic (Correction 2 & 4) ---
-const calculateShiftDistribution = (s: { startTime: string, endTime: string, isHolidayStart: boolean, isHolidayEnd: boolean, isExtraShift?: boolean }, r: Rates, threshold: number = 0) => {
+const calculateShiftDistribution = (s: { startTime: string, endTime: string, isHolidayStart: boolean, isHolidayEnd: boolean }, r: Rates, threshold: number = 0) => {
+  // Use normalized rates to avoid undefined property access
+  const rates = normalizeRates(r);
   const [startH, startM] = s.startTime.split(':').map(Number);
   const [endH, endM] = s.endTime.split(':').map(Number);
 
@@ -481,7 +505,7 @@ const calculateShiftDistribution = (s: { startTime: string, endTime: string, isH
   let endTotal = endH * 60 + endM;
   if (endTotal <= startTotal) endTotal += 24 * 60; // turno cruza medianoche
 
-  const nightStart = r.payroll.nightShiftStart * 60; // en minutos
+  const nightStart = rates.payroll.nightShiftStart * 60; // en minutos
   const dayStart = 6 * 60;
 
   const calculateForRange = (rangeStart: number, rangeEnd: number) => {
@@ -511,9 +535,9 @@ const calculateShiftDistribution = (s: { startTime: string, endTime: string, isH
     return { mD, mN, mDF, mNF };
   };
 
-  const ordEnd = s.isExtraShift ? startTotal : (threshold > 0 ? Math.min(endTotal, startTotal + threshold * 60) : startTotal);
+  const ordEnd = threshold > 0 ? Math.min(endTotal, startTotal + threshold * 60) : startTotal;
   const ord = calculateForRange(startTotal, ordEnd);
-  const extra = (s.isExtraShift || (threshold >= 0 && endTotal > ordEnd)) ? calculateForRange(ordEnd, endTotal) : { mD: 0, mN: 0, mDF: 0, mNF: 0 };
+  const extra = (threshold >= 0 && endTotal > ordEnd) ? calculateForRange(ordEnd, endTotal) : { mD: 0, mN: 0, mDF: 0, mNF: 0 };
 
   const round2 = (n: number) => Math.round(n * 100) / 100;
   return {
@@ -541,6 +565,8 @@ const calculatePeriodTotals = (
   allRecords: ShiftRecord[] = [],
   trisemanas: Trisemana[] = []
 ) => {
+  // Use normalized rates to avoid undefined property access
+  const r = normalizeRates(rates);
   let totalH = 0;
   let totalP = 0;
   let totalAVA = 0;
@@ -592,20 +618,22 @@ const calculatePeriodTotals = (
     
     let cumulative = 0;
     trisemanaRecords.forEach(r => {
-      const remaining = Math.max(0, trisemana.maxHours - cumulative);
+      const remainingForShift = Math.max(0, trisemana.maxHours - cumulative);
       const dist = calculateShiftDistribution({
         startTime: r.startTime,
         endTime: r.endTime,
         isHolidayStart: r.isHolidayStart || false,
-        isHolidayEnd: r.isHolidayEnd || false,
-        isExtraShift: r.isExtraShift || false
-      }, rates, remaining);
+        isHolidayEnd: r.isHolidayEnd || false
+      }, rates, remainingForShift);
       
-      // Mark if this shift crossed the threshold
       const shiftHours = (dist.ord.day + dist.ord.night + dist.ord.holidayDay + dist.ord.holidayNight) +
                          (dist.extra.day + dist.extra.night + dist.extra.holidayDay + dist.extra.holidayNight);
       
-      const crossedThreshold = cumulative < trisemana.maxHours && (cumulative + shiftHours) > trisemana.maxHours;
+      // Calculate manual additional hours distribution
+      const totalRecordOrd = (dist.ord.day + dist.ord.night + dist.ord.holidayDay + dist.ord.holidayNight);
+      const totalRecordExtra = (dist.extra.day + dist.extra.night + dist.extra.holidayDay + dist.extra.holidayNight);
+
+      const crossedThreshold = cumulative < trisemana.maxHours && (cumulative + totalRecordOrd) >= trisemana.maxHours;
       const alreadyOver = cumulative >= trisemana.maxHours;
 
       recordDistributions[r.id] = { 
@@ -613,7 +641,7 @@ const calculatePeriodTotals = (
         crossedThreshold, 
         alreadyOver,
         cumulativeBefore: cumulative,
-        cumulativeAfter: cumulative + (dist.ord.day + dist.ord.night + dist.ord.holidayDay + dist.ord.holidayNight)
+        cumulativeAfter: cumulative + totalRecordOrd
       };
       
       // Only add to breakdown if the record is in the current period being calculated
@@ -621,12 +649,12 @@ const calculatePeriodTotals = (
         if (!trisemanaBreakdown[trisemana.id]) {
           trisemanaBreakdown[trisemana.id] = { name: trisemana.name, ord: 0, extra: 0 };
         }
-        trisemanaBreakdown[trisemana.id].ord += (dist.ord.day + dist.ord.night + dist.ord.holidayDay + dist.ord.holidayNight);
-        trisemanaBreakdown[trisemana.id].extra += (dist.extra.day + dist.extra.night + dist.extra.holidayDay + dist.extra.holidayNight);
+        trisemanaBreakdown[trisemana.id].ord += totalRecordOrd;
+        trisemanaBreakdown[trisemana.id].extra += totalRecordExtra;
       }
 
-      // Only regular hours count towards the trisemana threshold
-      cumulative += (dist.ord.day + dist.ord.night + dist.ord.holidayDay + dist.ord.holidayNight);
+      // Both regular shift hours and manual additional hours (up to threshold) count towards trisemana
+      cumulative += totalRecordOrd;
     });
   });
 
@@ -649,9 +677,9 @@ const calculatePeriodTotals = (
         startTime: record.startTime,
         endTime: record.endTime,
         isHolidayStart: record.isHolidayStart || false,
-        isHolidayEnd: record.isHolidayEnd || false,
-        isExtraShift: record.isExtraShift || false
+        isHolidayEnd: record.isHolidayEnd || false
       }, rates, remainingToThreshold);
+      
       periodCumulativeHours += (dist.ord.day + dist.ord.night + dist.ord.holidayDay + dist.ord.holidayNight);
       
       // Store it so it's available for the UI
@@ -659,50 +687,55 @@ const calculatePeriodTotals = (
     }
 
     const isAVAMain = record.isAVAShift || record.isVirtualShift || (Object.values(record.ava || {}).some(v => v > 0) && Object.values(record.hours || {}).every(v => v === 0));
-
-    // Regular Hours (Consulta)
-    hoursBreakdown.day += dist.ord.day;
-    hoursBreakdown.night += dist.ord.night;
-    hoursBreakdown.holidayDay += dist.ord.holidayDay;
-    hoursBreakdown.holidayNight += dist.ord.holidayNight;
     
-    // Extra Hours (Consulta by default)
-    hoursBreakdown.extraDay += dist.extra.day;
-    hoursBreakdown.extraNight += dist.extra.night;
-    hoursBreakdown.extraHolidayDay += dist.extra.holidayDay;
-    hoursBreakdown.extraHolidayNight += dist.extra.holidayNight;
-
-    // AVA or Virtual Hours (Ordinary)
+    // Simple additive logic for breakdown
     if (isAVAMain) {
       avaVirtualBreakdown.day += dist.ord.day;
       avaVirtualBreakdown.night += dist.ord.night;
       avaVirtualBreakdown.holidayDay += dist.ord.holidayDay;
       avaVirtualBreakdown.holidayNight += dist.ord.holidayNight;
-      
-      // Subtract from hoursBreakdown because it was added above
-      hoursBreakdown.day -= dist.ord.day;
-      hoursBreakdown.night -= dist.ord.night;
-      hoursBreakdown.holidayDay -= dist.ord.holidayDay;
-      hoursBreakdown.holidayNight -= dist.ord.holidayNight;
-    }
 
-    // Extra Hours Type override
-    const extraType = record.extraHoursType || (isAVAMain ? 'avaVirtual' : 'consultation');
-    if (extraType === 'avaVirtual') {
       avaVirtualBreakdown.extraDay += dist.extra.day;
       avaVirtualBreakdown.extraNight += dist.extra.night;
       avaVirtualBreakdown.extraHolidayDay += dist.extra.holidayDay;
       avaVirtualBreakdown.extraHolidayNight += dist.extra.holidayNight;
+    } else {
+      hoursBreakdown.day += dist.ord.day;
+      hoursBreakdown.night += dist.ord.night;
+      hoursBreakdown.holidayDay += dist.ord.holidayDay;
+      hoursBreakdown.holidayNight += dist.ord.holidayNight;
 
-      // Subtract from hoursBreakdown
-      hoursBreakdown.extraDay -= dist.extra.day;
-      hoursBreakdown.extraNight -= dist.extra.night;
-      hoursBreakdown.extraHolidayDay -= dist.extra.holidayDay;
-      hoursBreakdown.extraHolidayNight -= dist.extra.holidayNight;
+      hoursBreakdown.extraDay += dist.extra.day;
+      hoursBreakdown.extraNight += dist.extra.night;
+      hoursBreakdown.extraHolidayDay += dist.extra.holidayDay;
+      hoursBreakdown.extraHolidayNight += dist.extra.holidayNight;
+    }
+
+    // Patients / Service Breakdown (For UI detailed report)
+    if (record.applyPatients) {
+      patientsBreakdown.day += (record.patients?.day || 0);
+      patientsBreakdown.night += (record.patients?.night || 0);
+      patientsBreakdown.holidayDay += (record.patients?.holidayDay || 0);
+      patientsBreakdown.holidayNight += (record.patients?.holidayNight || 0);
+    } else {
+      // If it's per hour service, add the combined hours to the breakdown
+      const extraType = record.extraHoursType || (isAVAMain ? 'avaVirtual' : 'consultation');
+      if (!isAVAMain) {
+        patientsBreakdown.day += dist.ord.day + (extraType === 'consultation' ? dist.extra.day : 0);
+        patientsBreakdown.night += dist.ord.night + (extraType === 'consultation' ? dist.extra.night : 0);
+        patientsBreakdown.holidayDay += dist.ord.holidayDay + (extraType === 'consultation' ? dist.extra.holidayDay : 0);
+        patientsBreakdown.holidayNight += dist.ord.holidayNight + (extraType === 'consultation' ? dist.extra.holidayNight : 0);
+      } else if (extraType === 'consultation') {
+        // AVA shift but extras are Consultation
+        patientsBreakdown.day += dist.extra.day;
+        patientsBreakdown.night += dist.extra.night;
+        patientsBreakdown.holidayDay += dist.extra.holidayDay;
+        patientsBreakdown.holidayNight += dist.extra.holidayNight;
+      }
     }
 
     // --- Additive Calculation Logic ---
-    const shiftValue = calculateShiftValue(record, rates, dist);
+    const shiftValue = calculateShiftValue({ ...record, isAVAShift: isAVAMain }, rates, recordDistributions[record.id]);
     components.base += shiftValue.base;
     components.service += shiftValue.service;
     components.extraSurcharge += shiftValue.extraSurcharge;
@@ -714,35 +747,28 @@ const calculatePeriodTotals = (
                              (dist.extra.day + dist.extra.night + dist.extra.holidayDay + dist.extra.holidayNight);
     
     monthlyHours[monthName] = (monthlyHours[monthName] || 0) + recordTotalHours;
-
-    if (record.applyPatients) {
-      patientsBreakdown.day += record.patients.day;
-      patientsBreakdown.night += record.patients.night;
-      patientsBreakdown.holidayDay += record.patients.holidayDay;
-      patientsBreakdown.holidayNight += record.patients.holidayNight;
-    }
   });
 
   const hoursValues = {
-    day: hoursBreakdown.day * rates.base.consultation,
-    night: hoursBreakdown.night * rates.base.consultation * (1 + rates.surcharges.night),
-    holidayDay: hoursBreakdown.holidayDay * rates.base.consultation * (1 + rates.surcharges.holidayDay),
-    holidayNight: hoursBreakdown.holidayNight * rates.base.consultation * (1 + rates.surcharges.holidayNight),
-    extraDay: hoursBreakdown.extraDay * rates.base.consultation * (1 + rates.surcharges.extraDay),
-    extraNight: hoursBreakdown.extraNight * rates.base.consultation * (1 + rates.surcharges.extraNight),
-    extraHolidayDay: hoursBreakdown.extraHolidayDay * rates.base.consultation * (1 + rates.surcharges.extraHolidayDay),
-    extraHolidayNight: hoursBreakdown.extraHolidayNight * rates.base.consultation * (1 + rates.surcharges.extraHolidayNight),
+    day: hoursBreakdown.day * (r.base?.consultation || 0),
+    night: hoursBreakdown.night * (r.base?.consultation || 0) * (1 + r.surcharges.night),
+    holidayDay: hoursBreakdown.holidayDay * (r.base?.consultation || 0) * (1 + r.surcharges.holidayDay),
+    holidayNight: hoursBreakdown.holidayNight * (r.base?.consultation || 0) * (1 + r.surcharges.holidayNight),
+    extraDay: hoursBreakdown.extraDay * (r.base?.consultation || 0) * (1 + r.surcharges.extraDay),
+    extraNight: hoursBreakdown.extraNight * (r.base?.consultation || 0) * (1 + r.surcharges.extraNight),
+    extraHolidayDay: hoursBreakdown.extraHolidayDay * (r.base?.consultation || 0) * (1 + r.surcharges.extraHolidayDay),
+    extraHolidayNight: hoursBreakdown.extraHolidayNight * (r.base?.consultation || 0) * (1 + r.surcharges.extraHolidayNight),
   };
 
   const avaVirtualValues = {
-    day: avaVirtualBreakdown.day * rates.base.ava,
-    night: avaVirtualBreakdown.night * rates.base.ava * (1 + rates.surcharges.night),
-    holidayDay: avaVirtualBreakdown.holidayDay * rates.base.ava * (1 + rates.surcharges.holidayDay),
-    holidayNight: avaVirtualBreakdown.holidayNight * rates.base.ava * (1 + rates.surcharges.holidayNight),
-    extraDay: avaVirtualBreakdown.extraDay * rates.base.ava * (1 + rates.surcharges.extraDay),
-    extraNight: avaVirtualBreakdown.extraNight * rates.base.ava * (1 + rates.surcharges.extraNight),
-    extraHolidayDay: avaVirtualBreakdown.extraHolidayDay * rates.base.ava * (1 + rates.surcharges.extraHolidayDay),
-    extraHolidayNight: avaVirtualBreakdown.extraHolidayNight * rates.base.ava * (1 + rates.surcharges.extraHolidayNight),
+    day: avaVirtualBreakdown.day * (r.base?.ava || 0),
+    night: avaVirtualBreakdown.night * (r.base?.ava || 0) * (1 + r.surcharges.night),
+    holidayDay: avaVirtualBreakdown.holidayDay * (r.base?.ava || 0) * (1 + r.surcharges.holidayDay),
+    holidayNight: avaVirtualBreakdown.holidayNight * (r.base?.ava || 0) * (1 + r.surcharges.holidayNight),
+    extraDay: avaVirtualBreakdown.extraDay * (r.base?.ava || 0) * (1 + r.surcharges.extraDay),
+    extraNight: avaVirtualBreakdown.extraNight * (r.base?.ava || 0) * (1 + r.surcharges.extraNight),
+    extraHolidayDay: avaVirtualBreakdown.extraHolidayDay * (r.base?.ava || 0) * (1 + r.surcharges.extraHolidayDay),
+    extraHolidayNight: avaVirtualBreakdown.extraHolidayNight * (r.base?.ava || 0) * (1 + r.surcharges.extraHolidayNight),
   };
 
   const patientsValues = {
@@ -754,7 +780,7 @@ const calculatePeriodTotals = (
 
   totalH = components.base + components.extraSurcharge;
   totalAVA = components.avaVirtual;
-  totalP = components.service + Object.values(patientsValues).reduce((a, b) => a + b, 0);
+  totalP = components.service; // Fix: service already contains both fixed service per hour and patient values.
 
   const gross = totalH + totalP + totalAVA;
   const totalRegularHours = hoursBreakdown.day + hoursBreakdown.night + hoursBreakdown.holidayDay + hoursBreakdown.holidayNight +
@@ -912,14 +938,44 @@ const calculatePeriodTotals = (
     effectiveDeductionRate,
     avg6: avg6Proportional,
     avg6Prima,
-    avg12
+    avg12,
+    retefuenteBreakdown: {
+      netIncome,
+      dedDependents,
+      dedPrepagada,
+      dedInteresesVivienda,
+      dedPensionVol,
+      exempt25,
+      totalDeductionsAndExemptions,
+      cap40Percent,
+      finalDeductionsAndExemptions,
+      baseGravableFinal,
+      baseUVT
+    },
+    taxBreakdown: {
+      health,
+      pension,
+      fsp,
+      legalDeductions,
+      additionalDeductions: sumAdditionalDeductions,
+      retefuente
+    },
+    grossBreakdown: {
+      consultationBase: totalH,
+      service: totalP,
+      ava: totalAVA
+    }
   };
 };
 
+// --- Main Application Component ---
+
 function MainApp() {
-  console.log("MainApp: Rendering...");
+  console.log("MainApp: Starting hook calls...");
   // --- Auth & State ---
   const { user, isAuthReady, authError, isLoggingIn, login, logout, setAuthError } = useAuth();
+  const [viewingArchive, setViewingArchive] = useState<SavedCalculation | null>(null);
+  console.log("MainApp: Auth hook called successfully");
 
   // --- State ---
   const [rates, setRates] = useState<Rates>(DEFAULT_RATES);
@@ -946,11 +1002,10 @@ function MainApp() {
     patients: { day: 0, night: 0, holidayDay: 0, holidayNight: 0 },
     applyPatients: true,
   });
-  const [records, setRecords] = useState<ShiftRecord[]>([]);
   const [allRecords, setAllRecords] = useState<ShiftRecord[]>([]);
   const [trisemanas, setTrisemanas] = useState<Trisemana[]>([]);
   const [showTrisemanaModal, setShowTrisemanaModal] = useState(false);
-  const [additionalDeductions, setAdditionalDeductions] = useState<Deduction[]>([]);
+  const [allDeductions, setAllDeductions] = useState<Deduction[]>([]);
   const [periods, setPeriods] = useState<BillingPeriod[]>([]);
   const [activePeriod, setActivePeriod] = useState<BillingPeriod | null>(null);
   const [selectedPeriodId, setSelectedPeriodId] = useState<string | null>(null);
@@ -963,6 +1018,7 @@ function MainApp() {
   });
   const [showHelp, setShowHelp] = useState<{ title: string, content: string } | null>(null);
   const [showTrisemanaHistory, setShowTrisemanaHistory] = useState(false);
+  const [showReteDetail, setShowReteDetail] = useState(false);
 
   const [editingPeriod, setEditingPeriod] = useState<BillingPeriod | null>(null);
   const [editingTrisemana, setEditingTrisemana] = useState<Trisemana | null>(null);
@@ -975,6 +1031,8 @@ function MainApp() {
 
   // --- Firestore Sync ---
   // --- Rates Sync ---
+  const lastRatesUpdate = useRef<number>(0);
+
   useEffect(() => {
     if (!isAuthReady || !user) {
       setRates(DEFAULT_RATES);
@@ -986,12 +1044,23 @@ function MainApp() {
       if (snapshot.exists()) {
         const userData = snapshot.data();
         if (userData.rates) {
+          // If we have a pending local write, or we just wrote recently, 
+          // ignore the snapshot to avoid reverting local state during debounce/sync
+          if (snapshot.metadata.hasPendingWrites || Date.now() - lastRatesUpdate.current < 2000) {
+            return;
+          }
+
           let updatedRates = { ...userData.rates };
           let changed = false;
 
-          // Migration: Ensure 2026 default billing cutoff is 29
+          // Migration: Ensure 2026 default billing cutoff is 29 and night shift starts at 19 (7 PM)
           if (!updatedRates.payroll.billingCutoffDay || updatedRates.payroll.billingCutoffDay === 25) {
             updatedRates.payroll.billingCutoffDay = 29;
+            changed = true;
+          }
+          
+          if (!updatedRates.payroll.nightShiftStart) {
+            updatedRates.payroll.nightShiftStart = 19;
             changed = true;
           }
 
@@ -1041,21 +1110,24 @@ function MainApp() {
   useEffect(() => {
     if (!isAuthReady || !user) return;
 
+    // Immediately mark that we have a local change to ignore server snapshots for a bit
+    lastRatesUpdate.current = Date.now();
+
     const userPath = `users/${user.uid}`;
     // We use a timeout to debounce updates to Firestore
     const timeout = setTimeout(() => {
       updateDoc(doc(db, userPath), { rates }).catch(err => 
         handleFirestoreError(err, OperationType.UPDATE, userPath)
       );
-    }, 1000);
+    }, 400); // Slightly faster debounce
 
     return () => clearTimeout(timeout);
   }, [rates, user, isAuthReady]);
 
   useEffect(() => {
     if (!isAuthReady || !user) {
-      setRecords([]);
-      setAdditionalDeductions([]);
+      setAllRecords([]);
+      setAllDeductions([]);
       setPeriods([]);
       setActivePeriod(null);
       setSelectedPeriodId(null);
@@ -1102,6 +1174,7 @@ function MainApp() {
   useEffect(() => {
     if (!isAuthReady || !user) {
       setAllRecords([]);
+      setAllDeductions([]);
       return;
     }
 
@@ -1113,33 +1186,41 @@ function MainApp() {
       handleFirestoreError(error, OperationType.LIST, recordsPath);
     });
 
-    return () => unsubscribeAllRecords();
-  }, [isAuthReady, user]);
-
-  useEffect(() => {
-    if (!isAuthReady || !user || !selectedPeriodId) {
-      setRecords([]);
-      setAdditionalDeductions([]);
-      return;
-    }
-
-    const recordsData = allRecords.filter(r => r.periodId === selectedPeriodId);
-    setRecords(sortRecords(recordsData));
-
     const deductionsPath = `users/${user.uid}/deductions`;
     const unsubscribeDeductions = onSnapshot(collection(db, deductionsPath), (snapshot) => {
-      const deductionsData = snapshot.docs
-        .map(doc => doc.data() as Deduction)
-        .filter(d => d.periodId === selectedPeriodId);
-      setAdditionalDeductions(deductionsData);
+      const deductionsData = snapshot.docs.map(doc => doc.data() as Deduction);
+      setAllDeductions(deductionsData);
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, deductionsPath);
     });
 
     return () => {
+      unsubscribeAllRecords();
       unsubscribeDeductions();
     };
-  }, [isAuthReady, user, selectedPeriodId, allRecords]);
+  }, [isAuthReady, user]);
+
+  // Combined real-time filtered values (Memoized for "simultaneous" feel)
+  const records = useMemo(() => {
+    if (!selectedPeriodId) return [];
+    const currentPeriod = periods.find(p => p.id === selectedPeriodId);
+    if (!currentPeriod) return [];
+
+    const filtered = allRecords.filter(r => {
+      if (r.periodId === selectedPeriodId) return true;
+      if (!r.periodId && r.date >= currentPeriod.startDate && r.date <= currentPeriod.endDate) return true;
+      return false;
+    });
+    return sortRecords(filtered);
+  }, [allRecords, selectedPeriodId, periods]);
+
+  const additionalDeductions = useMemo(() => {
+    if (viewingArchive) return viewingArchive.additionalDeductions || [];
+    if (!selectedPeriodId) return [];
+    return allDeductions.filter(d => d.periodId === selectedPeriodId);
+  }, [allDeductions, selectedPeriodId, viewingArchive]);
+
+  // Auto-switch to archive view if selected period is archived
   useEffect(() => {
     if (!user || !selectedPeriodId) {
       setViewingArchive(null);
@@ -1147,21 +1228,35 @@ function MainApp() {
     }
 
     const period = periods.find(p => p.id === selectedPeriodId);
-    if (period && period.status === 'archived') {
+    if (period && period.status === 'archived' && (!viewingArchive || viewingArchive.id !== period.id)) {
       setViewingArchive({
         id: period.id,
         name: period.name,
         timestamp: period.createdAt,
-        records: records,
+        records: allRecords.filter(r => r.periodId === period.id || (!r.periodId && r.date >= period.startDate && r.date <= period.endDate)),
         rates: period.rates || rates,
-        additionalDeductions: additionalDeductions
+        additionalDeductions: allDeductions.filter(d => d.periodId === period.id)
       });
-    } else {
-      setViewingArchive(null);
+    } else if (period && period.status === 'active' && viewingArchive) {
+        // If we switched to an active period but were viewing an archive, reset
+        setViewingArchive(null);
     }
-  }, [selectedPeriodId, periods, records, additionalDeductions, user, rates]);
+  }, [selectedPeriodId, periods, user]);
 
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth >= 1024);
+  
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth >= 1024) {
+        setIsSidebarOpen(true);
+      } else {
+        setIsSidebarOpen(false);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   const [showDetails, setShowDetails] = useState(false);
   const [savedCalculations, setSavedCalculations] = useState<SavedCalculation[]>(() => {
     try {
@@ -1174,15 +1269,58 @@ function MainApp() {
   const [calcName, setCalcName] = useState('');
   const [autoCalculatePatients, setAutoCalculatePatients] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [viewingArchive, setViewingArchive] = useState<SavedCalculation | null>(null);
   const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' | 'info' } | null>(null);
   const [showPeriodSelectionModal, setShowPeriodSelectionModal] = useState(false);
   const [showAccumulatedDetails, setShowAccumulatedDetails] = useState(false);
   const [showAccumulatedComponents, setShowAccumulatedComponents] = useState(false);
   const [showProjectionDetails, setShowProjectionDetails] = useState(false);
+  const [showDeductionDetails, setShowDeductionDetails] = useState(false);
+  const [showIncomeDetails, setShowIncomeDetails] = useState(false);
+  const [originalRecord, setOriginalRecord] = useState<ShiftRecord | null>(null);
+
+  const periodsWithLiveTotals = useMemo(() => {
+    return periods.map(p => {
+      // Find all records belonging to this period
+      const recordsForP = allRecords.filter(r => 
+        r.periodId === p.id || (!r.periodId && r.date >= p.startDate && r.date <= p.endDate)
+      );
+      
+      // Find all deductions for this period
+      const applicableDeductions = allDeductions.filter(d => d.periodId === p.id);
+      
+      // Use the rates stored in the period (if any) or current global rates
+      const pRates = p.rates || rates;
+      
+      // Calculate totals on the fly
+      const totals = calculatePeriodTotals(
+        recordsForP,
+        pRates,
+        applicableDeductions,
+        periods,
+        p.id,
+        allRecords,
+        trisemanas
+      );
+      
+      return {
+        ...p,
+        liveGross: totals.gross,
+        liveNet: totals.net,
+        livePatrimonial: totals.totalPatrimonial,
+        liveNetCash: totals.netCash,
+        liveDeductions: totals.totalDeductions
+      };
+    });
+  }, [periods, allRecords, allDeductions, rates, trisemanas]);
+
+  const registrationRef = useRef<HTMLDivElement>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
+    title?: string;
     message: string;
+    confirmLabel?: string;
+    type?: 'delete' | 'edit' | 'info';
+    changes?: { field: string; old: string; new: string }[];
     onConfirm: () => void;
   } | null>(null);
 
@@ -1235,8 +1373,7 @@ function MainApp() {
           startTime: r.startTime,
           endTime: r.endTime,
           isHolidayStart: r.isHolidayStart || false,
-          isHolidayEnd: r.isHolidayEnd || false,
-          isExtraShift: r.isExtraShift || false
+          isHolidayEnd: r.isHolidayEnd || false
         }, rates, rem);
         triCumulative += (d.ord.day + d.ord.night + d.ord.holidayDay + d.ord.holidayNight);
       });
@@ -1258,8 +1395,7 @@ function MainApp() {
           startTime: r.startTime,
           endTime: r.endTime,
           isHolidayStart: r.isHolidayStart || false,
-          isHolidayEnd: r.isHolidayEnd || false,
-          isExtraShift: r.isExtraShift || false
+          isHolidayEnd: r.isHolidayEnd || false
         }, rates, rem);
         periodCumulative += (d.ord.day + d.ord.night + d.ord.holidayDay + d.ord.holidayNight);
       });
@@ -1537,6 +1673,68 @@ function MainApp() {
     }
   };
 
+  const performRecordSave = async (newRecord: ShiftRecord) => {
+    if (!user) return;
+    const recordId = newRecord.id;
+
+    if (viewingArchive) {
+      const isFirestorePeriod = periods.some(p => p.id === viewingArchive.id);
+      if (isFirestorePeriod) {
+        const path = `users/${user.uid}/records/${recordId}`;
+        try {
+          await setDoc(doc(db, path), newRecord);
+        } catch (error) {
+          handleFirestoreError(error, editingId ? OperationType.UPDATE : OperationType.CREATE, path);
+          return;
+        }
+      }
+
+      const updatedRecords = editingId
+        ? viewingArchive.records.map(r => r.id === editingId ? newRecord : r)
+        : [...viewingArchive.records, newRecord];
+
+      setViewingArchive({
+        ...viewingArchive,
+        records: sortRecords(updatedRecords)
+      });
+      resetShiftForm();
+      showToast(editingId ? "Registro actualizado con éxito." : "Registro agregado con éxito.");
+      return;
+    }
+
+    const path = `users/${user.uid}/records/${recordId}`;
+    try {
+      await setDoc(doc(db, path), newRecord);
+      resetShiftForm();
+      showToast(editingId ? "Registro actualizado con éxito." : "Registro agregado con éxito.");
+    } catch (error) {
+      handleFirestoreError(error, editingId ? OperationType.UPDATE : OperationType.CREATE, path);
+    }
+  };
+
+  const resetShiftForm = () => {
+    setEditingId(null);
+    setOriginalRecord(null);
+    setManualTrisemanaId(null);
+    setShift({
+      date: new Date().toISOString().split('T')[0],
+      startTime: '07:00',
+      endTime: '19:00',
+      isHolidayStart: false,
+      isHolidayEnd: false,
+      isAVAShift: false,
+      isVirtualShift: false,
+      isExtraShift: false,
+      extraHoursType: 'consultation'
+    });
+    setQuantities({
+      hours: { day: 0, night: 0, holidayDay: 0, holidayNight: 0, extraDay: 0, extraNight: 0, extraHolidayDay: 0, extraHolidayNight: 0 },
+      ava: { day: 0, night: 0, holidayDay: 0, holidayNight: 0, extraDay: 0, extraNight: 0, extraHolidayDay: 0, extraHolidayNight: 0 },
+      patients: { day: 0, night: 0, holidayDay: 0, holidayNight: 0 },
+      applyPatients: true,
+    });
+  };
+
   const addRecord = async () => {
     if (!user) return;
     if (!selectedPeriodId) {
@@ -1571,130 +1769,119 @@ function MainApp() {
       trisemanaId: manualTrisemanaId || autoCalculatedDistribution?.h.trisemanaId || null,
     };
 
-    if (viewingArchive) {
-      // Si el archivo corresponde a un periodo en Firestore, persiste el cambio allí.
-      const isFirestorePeriod = periods.some(p => p.id === viewingArchive.id);
-      if (isFirestorePeriod) {
-        const path = `users/${user.uid}/records/${recordId}`;
-        try {
-          await setDoc(doc(db, path), newRecord);
-        } catch (error) {
-          handleFirestoreError(error, editingId ? OperationType.UPDATE : OperationType.CREATE, path);
-          return;
-        }
+    if (editingId && originalRecord) {
+      const changes: { field: string; old: string; new: string }[] = [];
+      
+      if (newRecord.date !== originalRecord.date) 
+        changes.push({ field: 'Fecha', old: originalRecord.date, new: newRecord.date });
+      if (newRecord.startTime !== originalRecord.startTime || newRecord.endTime !== originalRecord.endTime)
+        changes.push({ field: 'Horario', old: `${originalRecord.startTime}-${originalRecord.endTime}`, new: `${newRecord.startTime}-${newRecord.endTime}` });
+      if (newRecord.isHolidayStart !== originalRecord.isHolidayStart)
+        changes.push({ field: 'Inicio en Festivo', old: originalRecord.isHolidayStart ? 'Sí' : 'No', new: newRecord.isHolidayStart ? 'Sí' : 'No' });
+      if (newRecord.isHolidayEnd !== originalRecord.isHolidayEnd)
+        changes.push({ field: 'Fin en Festivo', old: originalRecord.isHolidayEnd ? 'Sí' : 'No', new: newRecord.isHolidayEnd ? 'Sí' : 'No' });
+      if (newRecord.isAVAShift !== originalRecord.isAVAShift)
+        changes.push({ field: 'Es AVA?', old: originalRecord.isAVAShift ? 'Sí' : 'No', new: newRecord.isAVAShift ? 'Sí' : 'No' });
+      if (newRecord.applyPatients !== originalRecord.applyPatients)
+        changes.push({ field: 'Aplica Pacientes?', old: originalRecord.applyPatients ? 'Sí' : 'No', new: newRecord.applyPatients ? 'Sí' : 'No' });
+      
+      if (newRecord.applyPatients) {
+        if (newRecord.patients.day !== originalRecord.patients.day)
+          changes.push({ field: 'Pacientes Día', old: String(originalRecord.patients.day), new: String(newRecord.patients.day) });
+        if (newRecord.patients.night !== originalRecord.patients.night)
+          changes.push({ field: 'Pacientes Noche', old: String(originalRecord.patients.night), new: String(newRecord.patients.night) });
+        if (newRecord.patients.holidayDay !== originalRecord.patients.holidayDay)
+          changes.push({ field: 'Pacientes F-Día', old: String(originalRecord.patients.holidayDay), new: String(newRecord.patients.holidayDay) });
+        if (newRecord.patients.holidayNight !== originalRecord.patients.holidayNight)
+          changes.push({ field: 'Pacientes F-Noche', old: String(originalRecord.patients.holidayNight), new: String(newRecord.patients.holidayNight) });
       }
 
-      const updatedRecords = editingId
-        ? viewingArchive.records.map(r => r.id === editingId ? newRecord : r)
-        : [...viewingArchive.records, newRecord];
+      if (changes.length === 0) {
+        setEditingId(null);
+        setOriginalRecord(null);
+        showToast("No se detectaron cambios.");
+        return;
+      }
 
-      setViewingArchive({
-        ...viewingArchive,
-        records: sortRecords(updatedRecords)
+      setConfirmDialog({
+        title: 'Confirmar Modificaciones',
+        message: 'Revisa el resumen de cambios antes de actualizar el registro.',
+        confirmLabel: 'Guardar Cambios',
+        type: 'edit',
+        changes,
+        onConfirm: () => performRecordSave(newRecord)
       });
-
-      setEditingId(null);
-      setManualTrisemanaId(null);
-      setShift({
-        date: new Date().toISOString().split('T')[0],
-        startTime: '07:00',
-        endTime: '19:00',
-        isHolidayStart: false,
-        isHolidayEnd: false,
-        isAVAShift: false,
-        isVirtualShift: false,
-        isExtraShift: false,
-        extraHoursType: 'consultation'
-      });
-      setQuantities({
-        hours: { day: 0, night: 0, holidayDay: 0, holidayNight: 0, extraDay: 0, extraNight: 0, extraHolidayDay: 0, extraHolidayNight: 0 },
-        ava: { day: 0, night: 0, holidayDay: 0, holidayNight: 0, extraDay: 0, extraNight: 0, extraHolidayDay: 0, extraHolidayNight: 0 },
-        patients: { day: 0, night: 0, holidayDay: 0, holidayNight: 0 },
-        applyPatients: true,
-      });
-      return;
-    }
-
-    const path = `users/${user.uid}/records/${recordId}`;
-    try {
-      await setDoc(doc(db, path), newRecord);
-      // Reset form to initial values
-      setEditingId(null);
-      setManualTrisemanaId(null);
-      setShift({
-        date: new Date().toISOString().split('T')[0],
-        startTime: '07:00',
-        endTime: '19:00',
-        isHolidayStart: false,
-        isHolidayEnd: false,
-        isAVAShift: false,
-        isVirtualShift: false,
-        isExtraShift: false,
-        extraHoursType: 'consultation',
-      });
-      setQuantities({
-        hours: { day: 0, night: 0, holidayDay: 0, holidayNight: 0, extraDay: 0, extraNight: 0, extraHolidayDay: 0, extraHolidayNight: 0 },
-        ava: { day: 0, night: 0, holidayDay: 0, holidayNight: 0, extraDay: 0, extraNight: 0, extraHolidayDay: 0, extraHolidayNight: 0 },
-        patients: { day: 0, night: 0, holidayDay: 0, holidayNight: 0 },
-        applyPatients: true,
-      });
-    } catch (error) {
-      handleFirestoreError(error, editingId ? OperationType.UPDATE : OperationType.CREATE, path);
+    } else {
+      await performRecordSave(newRecord);
     }
   };
 
   const removeRecord = async (id: string) => {
     if (!user) return;
-    if (editingId === id) setEditingId(null);
+    const baseRecords = viewingArchive ? viewingArchive.records : records;
+    const recordToDelete = baseRecords.find(r => r.id === id);
+    if (!recordToDelete) return;
 
-    if (viewingArchive) {
-      const isFirestorePeriod = periods.some(p => p.id === viewingArchive.id);
-      if (isFirestorePeriod) {
+    setConfirmDialog({
+      title: 'Confirmar Eliminación',
+      message: `¿Estás seguro de que deseas eliminar el turno del ${recordToDelete.date} (${recordToDelete.startTime} - ${recordToDelete.endTime})?`,
+      confirmLabel: 'Eliminar Registro',
+      type: 'delete',
+      onConfirm: async () => {
+        if (editingId === id) {
+          setEditingId(null);
+          setOriginalRecord(null);
+        }
+
+        if (viewingArchive) {
+          const isFirestorePeriod = periods.some(p => p.id === viewingArchive.id);
+          if (isFirestorePeriod) {
+            const path = `users/${user.uid}/records/${id}`;
+            try {
+              await deleteDoc(doc(db, path));
+            } catch (error) {
+              handleFirestoreError(error, OperationType.DELETE, path);
+              return;
+            }
+          }
+          setViewingArchive({
+            ...viewingArchive,
+            records: viewingArchive.records.filter(r => r.id !== id)
+          });
+          setSelectedRecordIds(prev => prev.filter(rid => rid !== id));
+          return;
+        }
+
         const path = `users/${user.uid}/records/${id}`;
         try {
           await deleteDoc(doc(db, path));
+          setSelectedRecordIds(prev => prev.filter(rid => rid !== id));
+          
+          if (selectedPeriodId) {
+            const recordsPath = `users/${user.uid}/records`;
+            const q = query(collection(db, recordsPath), where('periodId', '==', selectedPeriodId));
+            const snapshot = await getDocs(q);
+            const remainingRecords = snapshot.docs.map(doc => doc.data() as ShiftRecord);
+            
+            const period = periods.find(p => p.id === selectedPeriodId);
+            const calcRates = period?.rates || rates;
+            
+            const newTotals = calculatePeriodTotals(remainingRecords, calcRates, additionalDeductions, periods, selectedPeriodId);
+            
+            await updateDoc(doc(db, `users/${user.uid}/periods/${selectedPeriodId}`), { 
+              totalGross: newTotals.gross,
+              totalGrossWithBenefits: newTotals.totalPatrimonial,
+              totalDeductions: newTotals.totalDeductions,
+              net: newTotals.net,
+              primaProporcional: newTotals.primaProporcional,
+              vacacionesProporcional: newTotals.vacacionesProporcional
+            });
+          }
         } catch (error) {
           handleFirestoreError(error, OperationType.DELETE, path);
-          return;
         }
       }
-      setViewingArchive({
-        ...viewingArchive,
-        records: viewingArchive.records.filter(r => r.id !== id)
-      });
-      setSelectedRecordIds(prev => prev.filter(rid => rid !== id));
-      return;
-    }
-
-    const path = `users/${user.uid}/records/${id}`;
-    try {
-      await deleteDoc(doc(db, path));
-      setSelectedRecordIds(prev => prev.filter(rid => rid !== id));
-      
-      // --- Correction 2: Recalculate totalGross in Firestore ---
-      if (selectedPeriodId) {
-        const recordsPath = `users/${user.uid}/records`;
-        const q = query(collection(db, recordsPath), where('periodId', '==', selectedPeriodId));
-        const snapshot = await getDocs(q);
-        const remainingRecords = snapshot.docs.map(doc => doc.data() as ShiftRecord);
-        
-        const period = periods.find(p => p.id === selectedPeriodId);
-        const calcRates = period?.rates || rates;
-        
-        const newTotals = calculatePeriodTotals(remainingRecords, calcRates, additionalDeductions, periods, selectedPeriodId);
-        
-        await updateDoc(doc(db, `users/${user.uid}/periods/${selectedPeriodId}`), { 
-          totalGross: newTotals.gross,
-          totalGrossWithBenefits: newTotals.totalPatrimonial,
-          totalDeductions: newTotals.totalDeductions,
-          net: newTotals.net,
-          primaProporcional: newTotals.primaProporcional,
-          vacacionesProporcional: newTotals.vacacionesProporcional
-        });
-      }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, path);
-    }
+    });
   };
 
   const deleteSelectedRecords = async () => {
@@ -1846,26 +2033,38 @@ function MainApp() {
   };
 
   const editRecord = (record: ShiftRecord) => {
-    setEditingId(record.id);
-    setShift({ 
-      date: record.date,
-      startTime: record.startTime,
-      endTime: record.endTime,
-      isHolidayStart: record.isHolidayStart || false,
-      isHolidayEnd: record.isHolidayEnd || false,
-      isAVAShift: record.isAVAShift || false,
-      isVirtualShift: record.isVirtualShift || false,
-      isExtraShift: record.isExtraShift || false,
-      extraHoursType: record.extraHoursType || 'consultation'
+    setConfirmDialog({
+      title: 'Editar Registro',
+      message: `¿Deseas modificar los datos del turno del ${record.date} (${record.startTime} - ${record.endTime})?`,
+      confirmLabel: 'Iniciar Edición',
+      type: 'edit',
+      onConfirm: () => {
+        setEditingId(record.id);
+        setOriginalRecord(record);
+        setShift({ 
+          date: record.date,
+          startTime: record.startTime,
+          endTime: record.endTime,
+          isHolidayStart: record.isHolidayStart || false,
+          isHolidayEnd: record.isHolidayEnd || false,
+          isAVAShift: record.isAVAShift || false,
+          isVirtualShift: record.isVirtualShift || false,
+          isExtraShift: record.isExtraShift || false,
+          extraHoursType: record.extraHoursType || 'consultation'
+        });
+        setManualTrisemanaId(record.trisemanaId || null);
+        setQuantities({
+          hours: { ...record.hours },
+          ava: { ...record.ava },
+          patients: { ...record.patients },
+          applyPatients: record.applyPatients,
+        });
+        
+        if (registrationRef.current) {
+          registrationRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }
     });
-    setManualTrisemanaId(record.trisemanaId || null);
-    setQuantities({
-      hours: { ...record.hours },
-      ava: { ...record.ava },
-      patients: { ...record.patients },
-      applyPatients: record.applyPatients,
-    });
-    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const exportToPDF = () => {
@@ -2032,7 +2231,6 @@ function MainApp() {
   const loadCalculation = (saved: SavedCalculation) => {
     setViewingArchive({ ...saved });
     setRates(saved.rates);
-    setAdditionalDeductions(Array.isArray(saved.additionalDeductions) ? saved.additionalDeductions : []);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -2077,9 +2275,14 @@ function MainApp() {
 
   const deletePeriod = async (periodId: string) => {
     if (!user) return;
+    const period = periods.find(p => p.id === periodId);
+    if (!period) return;
     
     setConfirmDialog({
-      message: "¿Estás seguro de que deseas eliminar este periodo y todos sus registros asociados? Esta acción no se puede deshacer.",
+      title: 'Eliminar Periodo',
+      message: `¿Estás seguro de que deseas eliminar el periodo "${period.name}" y todos sus registros asociados? Esta acción no se puede deshacer.`,
+      confirmLabel: 'Si, Eliminar Todo',
+      type: 'delete',
       onConfirm: async () => {
         try {
           // 1. Delete all records associated with this period
@@ -2100,10 +2303,9 @@ function MainApp() {
             setSelectedPeriodId(nextActive ? nextActive.id : (remaining[0]?.id || null));
           }
           
-          showToast("Periodo y registros eliminados con éxito.");
+          showToast(`Periodo "${period.name}" eliminado.`);
         } catch (error) {
-          console.error("Error deleting period:", error);
-          showToast("Error al eliminar el periodo.", "error");
+          handleFirestoreError(error, OperationType.DELETE, `users/${user.uid}/periods/${periodId}`);
         }
       }
     });
@@ -2111,13 +2313,19 @@ function MainApp() {
 
   const deleteTrisemana = async (id: string) => {
     if (!user) return;
+    const trisemana = trisemanas.find(t => t.id === id);
+    if (!trisemana) return;
+
     setConfirmDialog({
-      message: "¿Estás seguro de que deseas eliminar esta trisemana? Los cálculos de horas extra volverán a usar el límite mensual para este intervalo.",
+      title: 'Eliminar Trisemana',
+      message: `¿Estás seguro de eliminar la ${trisemana.name}? El historial de horas se verá afectado para este rango.`,
+      confirmLabel: 'Eliminar Trisemana',
+      type: 'delete',
       onConfirm: async () => {
         const path = `users/${user.uid}/trisemanas/${id}`;
         try {
           await deleteDoc(doc(db, path));
-          showToast("Trisemana eliminada correctamente");
+          showToast("Trisemana eliminada.");
         } catch (error) {
           handleFirestoreError(error, OperationType.DELETE, path);
         }
@@ -2134,8 +2342,14 @@ function MainApp() {
   };
 
   const deleteSavedCalculation = (id: string) => {
+    const saved = savedCalculations.find(s => s.id === id);
+    if (!saved) return;
+
     setConfirmDialog({
-      message: '¿Eliminar este extracto guardado?',
+      title: 'Eliminar Historial',
+      message: `¿Deseas eliminar el extracto guardado "${saved.name}" de tu historial local?`,
+      confirmLabel: 'Eliminar Historial',
+      type: 'delete',
       onConfirm: () => {
         setSavedCalculations(savedCalculations.filter(s => s.id !== id));
         showToast('Extracto eliminado.');
@@ -2177,12 +2391,24 @@ function MainApp() {
 
   const removeDeduction = async (id: string) => {
     if (!user) return;
-    const path = `users/${user.uid}/deductions/${id}`;
-    try {
-      await deleteDoc(doc(db, path));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, path);
-    }
+    const deduction = additionalDeductions.find(d => d.id === id);
+    if (!deduction) return;
+
+    setConfirmDialog({
+      title: 'Eliminar Deducción',
+      message: `¿Estás seguro de que deseas eliminar la deducción "${deduction.concept}"?`,
+      confirmLabel: 'Eliminar Concepto',
+      type: 'delete',
+      onConfirm: async () => {
+        const path = `users/${user.uid}/deductions/${id}`;
+        try {
+          await deleteDoc(doc(db, path));
+          showToast(`Deducción "${deduction.concept}" eliminada.`);
+        } catch (error) {
+          handleFirestoreError(error, OperationType.DELETE, path);
+        }
+      }
+    });
   };
 
   // --- Calculations ---
@@ -2190,14 +2416,18 @@ function MainApp() {
     const baseRecords = viewingArchive ? viewingArchive.records : records;
     const currentPeriod = periods.find(p => p.id === selectedPeriodId);
     
-    // Always use fixed legal surcharges for calculations in 2026
-    const calculationRates = viewingArchive 
-      ? { ...viewingArchive.rates, surcharges: { ...SURCHARGES_2026 } } 
-      : { ...((currentPeriod?.rates || rates)), surcharges: { ...SURCHARGES_2026 } };
+    // Normalize calculation rates to ensure all fields exist
+    // IMPORTANT: For active periods, always use global rates to allow live editing
+    const rawRates = viewingArchive 
+      ? viewingArchive.rates 
+      : (currentPeriod && currentPeriod.status === 'archived' ? (currentPeriod.rates || rates) : rates);
+    const calculationRates = normalizeRates(rawRates);
 
     let recordsToCalculate = [...baseRecords];
     let allRecordsToCalculate = [...allRecords];
 
+    // Real-time projection: if we are not editing (meaning we are adding), 
+    // and the current form has a date, inject it as a projection if it's not already in recordsToCalculate
     if (editingId) {
       const currentFormRecord: ShiftRecord = {
         id: editingId,
@@ -2218,9 +2448,33 @@ function MainApp() {
         isHolidayEnd: shift.isHolidayEnd,
         isAVAShift: shift.isAVAShift,
         isVirtualShift: shift.isVirtualShift,
+        extraHoursType: shift.extraHoursType
       };
       recordsToCalculate = recordsToCalculate.map(r => r.id === editingId ? currentFormRecord : r);
       allRecordsToCalculate = allRecordsToCalculate.map(r => r.id === editingId ? currentFormRecord : r);
+    } else if (shift.date) {
+      // Logic for real-time adding projection
+      const draftRecord: ShiftRecord = {
+        id: 'draft-temp-id',
+        userId: user?.uid || '',
+        periodId: selectedPeriodId || undefined,
+        date: shift.date,
+        startTime: shift.startTime,
+        endTime: shift.endTime,
+        hours: { ...quantities.hours },
+        ava: { ...quantities.ava },
+        patients: { ...quantities.patients },
+        applyPatients: quantities.applyPatients,
+        isDefinitive: false, // Draft is always a projection
+        isExtraShift: shift.isExtraShift,
+        isHolidayStart: shift.isHolidayStart,
+        isHolidayEnd: shift.isHolidayEnd,
+        isAVAShift: shift.isAVAShift,
+        isVirtualShift: shift.isVirtualShift,
+        extraHoursType: shift.extraHoursType
+      };
+      recordsToCalculate = [...recordsToCalculate, draftRecord];
+      allRecordsToCalculate = [...allRecordsToCalculate, draftRecord];
     }
 
     const allResults = calculatePeriodTotals(
@@ -2255,7 +2509,7 @@ function MainApp() {
 
   if (!isAuthReady) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+      <div className="min-h-screen-ios bg-slate-50 flex items-center justify-center">
         <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
       </div>
     );
@@ -2263,7 +2517,7 @@ function MainApp() {
 
   if (!user) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+      <div className="min-h-screen-ios bg-slate-50 flex items-center justify-center p-4 safe-top safe-bottom">
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -2304,7 +2558,7 @@ function MainApp() {
             <button 
               onClick={login}
               disabled={isLoggingIn}
-              className={`w-full py-4 flex items-center justify-center gap-3 bg-white border-2 border-slate-100 rounded-2xl font-bold text-slate-700 transition-all shadow-sm ${isLoggingIn ? 'opacity-50 cursor-not-allowed' : 'hover:bg-slate-50 hover:border-indigo-100'}`}
+              className={`w-full py-4 flex items-center justify-center gap-3 bg-white border-2 border-slate-100 rounded-2xl font-bold text-slate-700 transition-all shadow-sm active:scale-95 ${isLoggingIn ? 'opacity-50 cursor-not-allowed' : 'hover:bg-slate-50 hover:border-indigo-100'}`}
             >
               {isLoggingIn ? (
                 <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
@@ -2323,23 +2577,23 @@ function MainApp() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 font-sans selection:bg-indigo-100">
+    <div className="min-h-screen-ios bg-[#F8FAFC] text-slate-900 font-sans selection:bg-indigo-100 flex flex-col overflow-x-hidden">
       {/* Header */}
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-30 px-6 py-4 flex items-center justify-between">
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-40 px-4 md:px-6 py-4 flex items-center justify-between safe-top">
         <div className="flex items-center gap-3">
           <div className="bg-indigo-600 p-2 rounded-xl shadow-lg shadow-indigo-200">
-            <Stethoscope className="text-white w-6 h-6" />
+            <Stethoscope className="text-white w-5 h-5 md:w-6 md:h-6" />
           </div>
           <div>
-            <h1 className="text-xl font-bold tracking-tight text-slate-800">EMI pagos</h1>
-            <p className="text-xs text-slate-500 font-medium uppercase tracking-wider">Colombia 2026 • Jornada Legal</p>
+            <h1 className="text-lg md:text-xl font-bold tracking-tight text-slate-800">EMI pagos</h1>
+            <p className="hidden md:block text-[10px] text-slate-500 font-medium uppercase tracking-wider">Colombia 2026 • Jornada Legal</p>
           </div>
         </div>
         
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 md:gap-4">
           <div className="hidden sm:flex items-center gap-3 px-3 py-1.5 bg-slate-50 rounded-xl border border-slate-100">
             <img src={user.photoURL || ''} alt={user.displayName || ''} className="w-6 h-6 rounded-full" />
-            <span className="text-xs font-bold text-slate-600">{user.displayName}</span>
+            <span className="text-xs font-bold text-slate-600 truncate max-w-[100px]">{user.displayName}</span>
           </div>
           <button 
             onClick={logout}
@@ -2350,17 +2604,25 @@ function MainApp() {
           </button>
           <button 
             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            className="lg:hidden p-2 hover:bg-slate-100 rounded-lg transition-colors"
+            className="lg:hidden p-2 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-100 transition-colors"
           >
-            <Settings className="w-5 h-5 text-slate-600" />
+            <Settings className="w-5 h-5" />
           </button>
         </div>
       </header>
 
+      {/* Mobile Sidebar Overlay */}
+      {isSidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-40 lg:hidden"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
+
       {/* Archive Viewing Banner */}
       {viewingArchive && (
-        <div className="bg-amber-50 border-b border-amber-200 px-6 py-3 flex items-center justify-between sticky top-[73px] z-20">
-          <div className="flex items-center gap-3">
+        <div className="bg-amber-50 border-b border-amber-200 px-4 md:px-6 py-3 flex flex-col md:flex-row items-center justify-between sticky top-[var(--header-height)] z-30 gap-3">
+          <div className="flex items-center gap-3 w-full md:w-auto">
             <div className="bg-amber-100 p-1.5 rounded-lg">
               <FolderOpen className="text-amber-600 w-4 h-4" />
             </div>
@@ -2369,40 +2631,52 @@ function MainApp() {
               <h2 className="text-sm font-bold text-amber-900">{viewingArchive.name}</h2>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 w-full md:w-auto overflow-x-auto pb-1 md:pb-0 no-scrollbar">
             <button 
               onClick={saveUpdatedArchive}
-              className="px-4 py-1.5 bg-amber-600 text-white text-xs font-bold rounded-lg hover:bg-amber-700 transition-all flex items-center gap-2 shadow-sm"
+              className="whitespace-nowrap px-4 py-2 bg-amber-600 text-white text-[10px] md:text-xs font-bold rounded-lg hover:bg-amber-700 transition-all flex items-center gap-2 shadow-sm shrink-0"
             >
               <Save className="w-3 h-3" />
               Guardar Cambios
             </button>
             <button 
               onClick={saveAndClosePeriod}
-              className="px-4 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded-lg hover:bg-indigo-700 transition-all flex items-center gap-2 shadow-sm"
+              className="whitespace-nowrap px-4 py-2 bg-indigo-600 text-white text-[10px] md:text-xs font-bold rounded-lg hover:bg-indigo-700 transition-all flex items-center gap-2 shadow-sm shrink-0"
             >
               <CheckCircle2 className="w-3 h-3" />
               Guardar y Cerrar
             </button>
             <button 
               onClick={closeArchive}
-              className="px-4 py-1.5 bg-white border border-amber-200 text-amber-700 text-xs font-bold rounded-lg hover:bg-amber-100 transition-all flex items-center gap-2"
+              className="whitespace-nowrap px-4 py-2 bg-white border border-amber-200 text-amber-700 text-[10px] md:text-xs font-bold rounded-lg hover:bg-amber-100 transition-all flex items-center gap-2 shrink-0"
             >
               <X className="w-3 h-3" />
-              Cerrar y Volver a Bitácora
+              Cerrar
             </button>
           </div>
         </div>
       )}
 
-      <div className="flex flex-col lg:flex-row">
+      <div className="flex flex-1 relative">
         {/* Sidebar: Configuration */}
         <aside className={`
-          ${isSidebarOpen ? 'w-full lg:w-80' : 'w-0 overflow-hidden'} 
-          bg-white border-r border-slate-200 transition-all duration-300 ease-in-out
-          lg:sticky lg:top-[73px] lg:h-[calc(100vh-73px)] overflow-y-auto
+          fixed inset-y-0 right-0 z-50 w-[85%] sm:w-80 bg-white border-l border-slate-200 transform transition-transform duration-300 ease-in-out lg:relative lg:translate-x-0 lg:z-0 lg:border-l-0 lg:border-r
+          ${isSidebarOpen ? 'translate-x-0' : 'translate-x-full lg:hidden'}
+          lg:sticky lg:top-[73px] lg:h-[calc(100vh-73px)] overflow-y-auto safe-bottom
         `}>
-          <div className="p-6 space-y-8">
+          <div className="p-4 md:p-6 space-y-8">
+            <div className="lg:hidden flex items-center justify-between mb-4 border-b pb-4">
+              <h2 className="font-bold text-slate-800 flex items-center gap-2">
+                <Settings className="w-4 h-4" />
+                Configuración
+              </h2>
+              <button 
+                onClick={() => setIsSidebarOpen(false)}
+                className="p-2 hover:bg-slate-100 rounded-lg"
+              >
+                <X className="w-5 h-5 text-slate-400" />
+              </button>
+            </div>
             {/* Period Selector */}
             <section className="bg-indigo-50 p-4 rounded-2xl border border-indigo-100">
               <div className="flex items-center justify-between mb-3">
@@ -2734,7 +3008,7 @@ function MainApp() {
                           <input 
                             type="number"
                             step="0.01"
-                            value={rates.base[item.key as keyof Rates['base']]}
+                            value={rates.base[item.key as keyof Rates['base']] || 0}
                             onChange={(e) => {
                               const val = Number(e.target.value);
                               const newBase = { ...rates.base, [item.key]: val };
@@ -2785,7 +3059,7 @@ function MainApp() {
                         <input 
                           type="number" 
                           step="0.01"
-                          value={rates.hourly.day}
+                          value={rates.hourly.day || 0}
                           onChange={(e) => {
                             const base = Number(e.target.value);
                             setRates({
@@ -2827,7 +3101,7 @@ function MainApp() {
                           <input 
                             type="number"
                             step="0.01"
-                            value={rates.hourly[item.key as keyof Rates['hourly']]}
+                            value={rates.hourly[item.key as keyof Rates['hourly']] || 0}
                             onChange={(e) => setRates({
                               ...rates,
                               hourly: { ...rates.hourly, [item.key]: Number(e.target.value) }
@@ -3026,7 +3300,7 @@ function MainApp() {
                       <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Cargo / Título</label>
                       <input 
                         type="text"
-                        value={rates.payroll.jobTitle}
+                        value={rates.payroll.jobTitle || ''}
                         onChange={(e) => setRates({
                           ...rates,
                           payroll: { ...rates.payroll, jobTitle: e.target.value }
@@ -3047,7 +3321,7 @@ function MainApp() {
                       </label>
                       <input 
                         type="number"
-                        value={rates.payroll.uvtValue}
+                        value={rates.payroll.uvtValue || 0}
                         onChange={(e) => setRates({
                           ...rates,
                           payroll: { ...rates.payroll, uvtValue: Number(e.target.value) }
@@ -3072,7 +3346,7 @@ function MainApp() {
                         type="number"
                         min="1"
                         max="31"
-                        value={rates.payroll.billingCutoffDay}
+                        value={rates.payroll.billingCutoffDay || 0}
                         onChange={(e) => setRates({
                           ...rates,
                           payroll: { ...rates.payroll, billingCutoffDay: Number(e.target.value) }
@@ -3120,7 +3394,7 @@ function MainApp() {
                         type="number"
                         min="0"
                         max="23"
-                        value={rates.payroll.nightShiftStart}
+                        value={rates.payroll.nightShiftStart || 0}
                         onChange={(e) => setRates({
                           ...rates,
                           payroll: { ...rates.payroll, nightShiftStart: Number(e.target.value) }
@@ -3157,24 +3431,27 @@ function MainApp() {
                           <input 
                             type="checkbox"
                             checked={rates.payroll.usePrepagada}
-                            onChange={(e) => setRates({
-                              ...rates,
-                              payroll: { ...rates.payroll, usePrepagada: e.target.checked }
-                            })}
+                            onChange={(e) => setRates(prev => ({
+                              ...prev,
+                              payroll: { ...prev.payroll, usePrepagada: e.target.checked }
+                            }))}
                             className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                           />
                         </div>
                       </div>
-                      <input 
-                        type="number"
-                        value={rates.payroll.prepagada}
-                        onChange={(e) => setRates({
-                          ...rates,
-                          payroll: { ...rates.payroll, prepagada: Number(e.target.value) }
-                        })}
-                        disabled={!rates.payroll.usePrepagada}
-                        className={`w-full bg-white border border-slate-200 rounded-xl py-2 px-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono ${!rates.payroll.usePrepagada ? 'opacity-50 grayscale' : ''}`}
-                      />
+                        <input 
+                          type="number"
+                          value={rates.payroll.prepagada === 0 ? '' : rates.payroll.prepagada}
+                          onChange={(e) => {
+                            const val = e.target.value === '' ? 0 : Number(e.target.value);
+                            setRates(prev => ({
+                              ...prev,
+                              payroll: { ...prev.payroll, prepagada: val }
+                            }));
+                          }}
+                          disabled={!rates.payroll.usePrepagada}
+                          className={`w-full bg-white border border-slate-200 rounded-xl py-2 px-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono ${!rates.payroll.usePrepagada ? 'opacity-50 grayscale' : ''}`}
+                        />
                     </div>
                     <div>
                       <div className="flex items-center justify-between mb-1">
@@ -3205,21 +3482,24 @@ function MainApp() {
                           <input 
                             type="checkbox"
                             checked={rates.payroll.useInteresesVivienda}
-                            onChange={(e) => setRates({
-                              ...rates,
-                              payroll: { ...rates.payroll, useInteresesVivienda: e.target.checked }
-                            })}
+                            onChange={(e) => setRates(prev => ({
+                              ...prev,
+                              payroll: { ...prev.payroll, useInteresesVivienda: e.target.checked }
+                            }))}
                             className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                           />
                         </div>
                       </div>
                       <input 
                         type="number"
-                        value={rates.payroll.interesesVivienda}
-                        onChange={(e) => setRates({
-                          ...rates,
-                          payroll: { ...rates.payroll, interesesVivienda: Number(e.target.value) }
-                        })}
+                        value={rates.payroll.interesesVivienda === 0 ? '' : rates.payroll.interesesVivienda}
+                        onChange={(e) => {
+                          const val = e.target.value === '' ? 0 : Number(e.target.value);
+                          setRates(prev => ({
+                            ...prev,
+                            payroll: { ...prev.payroll, interesesVivienda: val }
+                          }));
+                        }}
                         disabled={!rates.payroll.useInteresesVivienda}
                         className={`w-full bg-white border border-slate-200 rounded-xl py-2 px-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono ${!rates.payroll.useInteresesVivienda ? 'opacity-50 grayscale' : ''}`}
                       />
@@ -3263,11 +3543,14 @@ function MainApp() {
                       </div>
                       <input 
                         type="number"
-                        value={rates.payroll.pensionVoluntaria}
-                        onChange={(e) => setRates({
-                          ...rates,
-                          payroll: { ...rates.payroll, pensionVoluntaria: Number(e.target.value) }
-                        })}
+                        value={rates.payroll.pensionVoluntaria === 0 ? '' : rates.payroll.pensionVoluntaria}
+                        onChange={(e) => {
+                          const val = e.target.value === '' ? 0 : Number(e.target.value);
+                          setRates(prev => ({
+                            ...prev,
+                            payroll: { ...prev.payroll, pensionVoluntaria: val }
+                          }));
+                        }}
                         disabled={!rates.payroll.usePensionVoluntaria}
                         className={`w-full bg-white border border-slate-200 rounded-xl py-2 px-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono ${!rates.payroll.usePensionVoluntaria ? 'opacity-50 grayscale' : ''}`}
                       />
@@ -3298,21 +3581,13 @@ function MainApp() {
                               <input 
                                 type="number"
                                 step="0.01"
-                                key={`manual-rete-${rates.payroll.manualRetefuentePct}`}
-                                defaultValue={rates.payroll.manualRetefuentePct}
-                                onBlur={(e) => {
-                                  const val = Number(e.target.value);
-                                  if (!isNaN(val)) {
-                                    setRates(prev => ({
-                                      ...prev,
-                                      payroll: { ...prev.payroll, manualRetefuentePct: val }
-                                    }));
-                                  }
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') {
-                                    (e.target as HTMLInputElement).blur();
-                                  }
+                                value={rates.payroll.manualRetefuentePct}
+                                onChange={(e) => {
+                                  const val = e.target.value === '' ? 0 : Number(e.target.value);
+                                  setRates(prev => ({
+                                    ...prev,
+                                    payroll: { ...prev.payroll, manualRetefuentePct: val }
+                                  }));
                                 }}
                                 className="w-16 bg-transparent text-right text-xs font-bold text-indigo-700 outline-none"
                               />
@@ -3485,38 +3760,39 @@ function MainApp() {
         </aside>
 
         {/* Main Content */}
-        <main className="flex-1 p-6 lg:p-10 space-y-10 max-w-5xl mx-auto">
+        <main className="flex-1 p-4 md:p-8 lg:p-10 space-y-8 md:space-y-10 max-w-5xl mx-auto w-full overflow-x-hidden safe-bottom">
           {/* Step 2: Period and Register Shift */}
-          <section className="space-y-6">
+          <section ref={registrationRef} className="space-y-6">
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-sm">2</div>
-              <h2 className="text-xl font-bold text-slate-800">Periodo y Registro de Turnos</h2>
+              <div className="w-8 h-8 shrink-0 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-sm">2</div>
+              <h2 className="text-lg md:text-xl font-bold text-slate-800">Periodo y Registro de Turnos</h2>
             </div>
 
             {/* Period Status Banner */}
             {selectedPeriodId && (
-              <div className={`p-6 rounded-3xl border shadow-sm flex flex-col md:flex-row items-center justify-between gap-4 ${
+              <div className={`p-4 md:p-6 rounded-3xl border shadow-sm flex flex-col md:flex-row items-center justify-between gap-4 ${
                 periods.find(p => p.id === selectedPeriodId)?.status === 'active' 
                   ? 'bg-white border-slate-200' 
                   : 'bg-amber-50 border-amber-200'
               }`}>
-                <div className="flex items-center gap-4">
-                  <div className={`p-3 rounded-2xl ${
+                <div className="flex items-center gap-4 w-full md:w-auto">
+                  <div className={`p-3 rounded-2xl shrink-0 ${
                     periods.find(p => p.id === selectedPeriodId)?.status === 'active' 
                       ? 'bg-indigo-100 text-indigo-600' 
                       : 'bg-amber-100 text-amber-600'
                   }`}>
                     <Calendar className="w-6 h-6" />
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <input 
+                        key={selectedPeriodId}
                         type="text"
                         defaultValue={periods.find(p => p.id === selectedPeriodId)?.name}
                         onBlur={(e) => updatePeriodName(selectedPeriodId, e.target.value)}
-                        className="text-lg font-bold text-slate-800 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-indigo-500 focus:ring-0 outline-none transition-all px-1"
+                        className="text-base md:text-lg font-bold text-slate-800 bg-transparent border-b border-transparent hover:border-slate-300 focus:border-indigo-500 focus:ring-0 outline-none transition-all px-1 truncate w-full"
                       />
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                      <span className={`px-2 py-0.5 rounded-full text-[8px] md:text-[10px] font-bold uppercase tracking-wider shrink-0 ${
                         periods.find(p => p.id === selectedPeriodId)?.status === 'active' 
                           ? 'bg-emerald-100 text-emerald-700' 
                           : 'bg-amber-200 text-amber-800'
@@ -3524,7 +3800,7 @@ function MainApp() {
                         {periods.find(p => p.id === selectedPeriodId)?.status === 'active' ? 'Activo' : 'Archivado'}
                       </span>
                     </div>
-                    <p className="text-sm text-slate-500">
+                    <p className="text-xs md:text-sm text-slate-500 truncate">
                       Rango: <span className="font-bold">{periods.find(p => p.id === selectedPeriodId)?.startDate}</span> al <span className="font-bold">{periods.find(p => p.id === selectedPeriodId)?.endDate}</span>
                     </p>
                   </div>
@@ -3533,37 +3809,66 @@ function MainApp() {
                 {periods.find(p => p.id === selectedPeriodId)?.status === 'active' ? (
                   <button 
                     onClick={() => openEditPeriod(periods.find(p => p.id === selectedPeriodId)!)}
-                    className="px-5 py-2.5 bg-slate-800 text-white text-xs font-bold rounded-xl hover:bg-slate-700 transition-all flex items-center gap-2 shadow-md"
+                    className="w-full md:w-auto px-5 py-3 bg-slate-800 text-white text-xs font-bold rounded-xl hover:bg-slate-700 active:scale-95 transition-all flex items-center justify-center gap-2 shadow-md"
                   >
                     <Archive className="w-4 h-4" />
-                    Cerrar y Nuevo Periodo
+                    Configurar Periodo
                   </button>
                 ) : (
-                  <div className="flex flex-col md:flex-row items-center gap-3 bg-white/50 p-3 rounded-2xl border border-amber-200/50">
-                    <div className="flex items-center gap-2">
-                      <Info className="w-4 h-4 text-amber-600" />
+                  <div className="flex flex-col md:flex-row items-center gap-3 bg-white/50 p-3 rounded-2xl border border-amber-200/50 w-full md:w-auto">
+                    <div className="flex items-center gap-2 w-full md:w-auto">
+                      <Info className="w-4 h-4 text-amber-600 shrink-0" />
                       <p className="text-xs text-amber-800 font-medium">Este periodo está archivado.</p>
                     </div>
-                    <button 
-                      onClick={() => reactivatePeriod(selectedPeriodId)}
-                      className="px-4 py-2 bg-indigo-600 text-white text-[10px] font-bold rounded-xl hover:bg-indigo-700 transition-all flex items-center gap-2 shadow-sm"
-                    >
-                      <RotateCcw className="w-3 h-3" />
-                      Reactivar Periodo
-                    </button>
-                    <button 
-                      onClick={updatePeriodTotalGross}
-                      className="px-4 py-2 bg-amber-600 text-white text-[10px] font-bold rounded-xl hover:bg-amber-700 transition-all flex items-center gap-2 shadow-sm"
-                    >
-                      <Save className="w-3 h-3" />
-                      Actualizar Cierre
-                    </button>
+                    <div className="grid grid-cols-2 lg:flex items-center gap-2 w-full md:w-auto">
+                      <button 
+                        onClick={() => reactivatePeriod(selectedPeriodId)}
+                        className="px-3 py-2.5 bg-indigo-600 text-white text-[9px] font-bold rounded-xl hover:bg-indigo-700 active:scale-95 transition-all flex items-center justify-center gap-2 shadow-sm"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        Reactivar
+                      </button>
+                      <button 
+                        onClick={updatePeriodTotalGross}
+                        className="px-3 py-2.5 bg-amber-600 text-white text-[9px] font-bold rounded-xl hover:bg-amber-700 active:scale-95 transition-all flex items-center justify-center gap-2 shadow-sm"
+                      >
+                        <Save className="w-3 h-3" />
+                        Actualizar
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
             )}
             
-            <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-6">
+          {/* Summary Stats - Scrollable on mobile */}
+          <div className="flex overflow-x-auto no-scrollbar gap-2 pb-2 -mx-4 px-4 md:mx-0 md:px-0">
+            <div className="bg-white p-3 md:p-4 rounded-2xl border border-slate-200 shadow-sm min-w-[140px] flex-1">
+              <div className="flex items-center gap-2 text-slate-500 mb-1">
+                <Clock className="w-3 h-3" />
+                <span className="text-[10px] font-bold uppercase tracking-wider">H. Ordinarias</span>
+              </div>
+              <p className="text-xl font-bold text-slate-800 font-mono">{results.all.totalRegularHours.toFixed(1)}h</p>
+            </div>
+            {results.all.totalExtraHours > 0 && (
+              <div className="bg-amber-50 p-3 md:p-4 rounded-2xl border border-amber-200 shadow-sm min-w-[140px] flex-1">
+                <div className="flex items-center gap-2 text-amber-600 mb-1">
+                  <TrendingUp className="w-3 h-3" />
+                  <span className="text-[10px] font-bold uppercase tracking-wider">H. Extras</span>
+                </div>
+                <p className="text-xl font-bold text-amber-900 font-mono">{results.all.totalExtraHours.toFixed(1)}h</p>
+              </div>
+            )}
+            <div className="bg-indigo-50 p-3 md:p-4 rounded-2xl border border-indigo-200 shadow-sm min-w-[140px] flex-1">
+              <div className="flex items-center gap-2 text-indigo-600 mb-1">
+                <Wallet className="w-3 h-3" />
+                <span className="text-[10px] font-bold uppercase tracking-wider">Caja Proyectada</span>
+              </div>
+              <p className="text-xl font-bold text-indigo-900 font-mono">{formatCurrency(results.all.netCash)}</p>
+            </div>
+          </div>
+
+          <div className="bg-white p-4 md:p-6 rounded-3xl border border-slate-200 shadow-sm space-y-6 transition-all">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2 text-indigo-600">
                   <FilePlus className="w-5 h-5" />
@@ -3572,19 +3877,19 @@ function MainApp() {
               </div>
               <div className="flex items-start gap-3 bg-blue-50 p-4 rounded-2xl text-blue-700 text-sm leading-relaxed">
                 <Info className="w-5 h-5 shrink-0 mt-0.5" />
-                <p>Configura los intervalos. Las horas se calcularán automáticamente, pero puedes ajustarlas antes de agregarlas a la bitácora.</p>
+                <p>Configura los intervalos. Las horas se calcularán automáticamente.</p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 md:gap-6">
                 <div className="space-y-4">
                   <div className="space-y-2">
                     <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">Fecha</label>
-                    <input 
-                      type="date" 
-                      value={shift.date}
-                      onChange={(e) => setShift({ ...shift, date: e.target.value })}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                    />
+                      <input 
+                        type="date" 
+                        value={shift.date || ''}
+                        onChange={(e) => setShift({ ...shift, date: e.target.value })}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                      />
                   </div>
                   <div className="space-y-2">
                     <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">Trisemana (Periodo)</label>
@@ -3705,16 +4010,7 @@ function MainApp() {
                     <div className="text-[10px] font-bold text-slate-400 uppercase">Nocturnas: <span className={`${shift.isAVAShift ? 'text-amber-600' : 'text-indigo-600'} font-mono text-sm ml-1`}>{shift.isAVAShift ? quantities.ava.night : quantities.hours.night}h</span></div>
                     <div className="text-[10px] font-bold text-slate-400 uppercase">D-Fest: <span className={`${shift.isAVAShift ? 'text-amber-600' : 'text-indigo-600'} font-mono text-sm ml-1`}>{shift.isAVAShift ? quantities.ava.holidayDay : quantities.hours.holidayDay}h</span></div>
                     <div className="text-[10px] font-bold text-slate-400 uppercase">N-Fest: <span className={`${shift.isAVAShift ? 'text-amber-600' : 'text-indigo-600'} font-mono text-sm ml-1`}>{shift.isAVAShift ? quantities.ava.holidayNight : quantities.hours.holidayNight}h</span></div>
-                    {((shift.isAVAShift) ? (quantities.ava.extraDay + quantities.ava.extraNight + quantities.ava.extraHolidayDay + quantities.ava.extraHolidayNight) : (quantities.hours.extraDay + quantities.hours.extraNight + quantities.hours.extraHolidayDay + quantities.hours.extraHolidayNight)) > 0 && (
-                      <div className="col-span-2 text-[10px] font-bold text-rose-500 uppercase mt-1 border-t border-rose-100 pt-1 flex justify-between">
-                        <span>Turno Adicional:</span>
-                        <span className="font-mono text-sm">
-                          {shift.isAVAShift 
-                            ? (quantities.ava.extraDay + quantities.ava.extraNight + quantities.ava.extraHolidayDay + quantities.ava.extraHolidayNight) 
-                            : (quantities.hours.extraDay + quantities.hours.extraNight + quantities.hours.extraHolidayDay + quantities.hours.extraHolidayNight)}h
-                        </span>
-                      </div>
-                    )}
+                    {/* {((shift.isAVAShift) ? (quantities.ava.extraDay + ...)} */}
                   </div>
                 </div>
               </div>
@@ -3739,7 +4035,7 @@ function MainApp() {
                           type="number"
                           step="0.5"
                           disabled={shift.isAVAShift}
-                          value={quantities.hours[item.key as keyof Quantities['hours']]}
+                          value={quantities.hours[item.key as keyof Quantities['hours']] || 0}
                           onChange={(e) => setQuantities({
                             ...quantities,
                             hours: { ...quantities.hours, [item.key]: Number(e.target.value) }
@@ -3769,68 +4065,12 @@ function MainApp() {
                         <input 
                           type="number"
                           step="0.5"
-                          value={quantities.ava[item.key as keyof Quantities['ava']]}
+                          value={quantities.ava[item.key as keyof Quantities['ava']] || 0}
                           onChange={(e) => setQuantities({
                             ...quantities,
                             ava: { ...quantities.ava, [item.key]: Number(e.target.value) }
                           })}
                           className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Extra Hours Adjustment */}
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2 text-amber-600">
-                      <PlusCircle className="w-4 h-4" />
-                      <h3 className="text-sm font-bold">Horas de Turno Adicional</h3>
-                    </div>
-                    <div className="flex gap-1 bg-amber-100/50 p-0.5 rounded-lg border border-amber-200">
-                      {[
-                        { id: 'consultation', label: 'Cons' },
-                        { id: 'avaVirtual', label: 'AVA/V' },
-                      ].map((type) => (
-                        <button
-                          key={type.id}
-                          onClick={() => setShift({ ...shift, extraHoursType: type.id as 'consultation' | 'avaVirtual' })}
-                          className={`px-2 py-0.5 rounded-md text-[9px] font-bold uppercase transition-all ${
-                            shift.extraHoursType === type.id 
-                              ? 'bg-amber-600 text-white shadow-sm' 
-                              : 'text-amber-700 hover:bg-amber-200'
-                          }`}
-                        >
-                          {type.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    {[
-                      { label: 'Diu Adic', key: 'extraDay' },
-                      { label: 'Noc Adic', key: 'extraNight' },
-                      { label: 'D-Fest Adic', key: 'extraHolidayDay' },
-                      { label: 'N-Fest Adic', key: 'extraHolidayNight' },
-                    ].map((item) => (
-                      <div key={item.key}>
-                        <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">{item.label}</label>
-                        <input 
-                          type="number"
-                          step="0.5"
-                          value={shift.extraHoursType === 'avaVirtual' ? quantities.ava[item.key as keyof Quantities['ava']] : quantities.hours[item.key as keyof Quantities['hours']]}
-                          onChange={(e) => {
-                            const val = Number(e.target.value);
-                            setQuantities({
-                              ...quantities,
-                              [shift.extraHoursType === 'avaVirtual' ? 'ava' : 'hours']: { 
-                                ...quantities[shift.extraHoursType === 'avaVirtual' ? 'ava' : 'hours'], 
-                                [item.key]: val 
-                              }
-                            })
-                          }}
-                          className="w-full bg-amber-50/50 border border-amber-100 rounded-xl p-2 text-sm focus:ring-2 focus:ring-amber-500 outline-none transition-all font-mono"
                         />
                       </div>
                     ))}
@@ -3885,7 +4125,7 @@ function MainApp() {
                         <input 
                           type="number"
                           disabled={!quantities.applyPatients}
-                          value={quantities.patients[item.key as keyof Quantities['patients']]}
+                          value={quantities.patients[item.key as keyof Quantities['patients']] || 0}
                           onChange={(e) => {
                             setAutoCalculatePatients(false);
                             setQuantities({
@@ -4090,29 +4330,30 @@ function MainApp() {
               </div>
             )}
 
-            <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
               {/* Legend */}
-              <div className="bg-slate-50/50 border-b border-slate-100 p-4 flex flex-wrap gap-4 justify-center">
+              <div className="bg-slate-50/50 border-b border-slate-100 p-4 flex flex-wrap gap-x-6 gap-y-2 justify-center items-center">
                 <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-amber-500"></div>
+                  <div className="w-2.5 h-2.5 rounded-full bg-amber-500 shadow-sm shadow-amber-200"></div>
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Diurna</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
+                  <div className="w-2.5 h-2.5 rounded-full bg-indigo-500 shadow-sm shadow-indigo-200"></div>
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Nocturna</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-rose-500"></div>
+                  <div className="w-2.5 h-2.5 rounded-full bg-rose-500 shadow-sm shadow-rose-200"></div>
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">D-Festiva</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-purple-500"></div>
+                  <div className="w-2.5 h-2.5 rounded-full bg-purple-500 shadow-sm shadow-purple-200"></div>
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">N-Festiva</span>
                 </div>
               </div>
 
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
+              <div className="overflow-x-auto no-scrollbar relative">
+                <div className="md:hidden sticky left-0 right-0 h-1 bg-gradient-to-r from-indigo-500/20 via-transparent to-indigo-500/20 pointer-events-none z-10" />
+                <table className="w-full text-left border-collapse min-w-[800px]">
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200">
                       <th className="p-4 w-10">
@@ -4222,17 +4463,25 @@ function MainApp() {
                                   extraHolidayNight: extraType === 'consultation' ? dist.extra.holidayNight : 0
                                 };
 
+                                const dayTotal = (h.day + h.night + h.holidayDay + h.holidayNight) + 
+                                              (h.extraDay + h.extraNight + h.extraHolidayDay + h.extraHolidayNight);
+
                                 return (
                                   <div className="flex flex-col">
+                                    <div className="mb-1">
+                                      <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-1 py-0.5 rounded border border-slate-100">
+                                        DÍA: {dayTotal}h
+                                      </span>
+                                    </div>
                                     <div className="flex flex-wrap gap-x-2">
-                                      {h.day > 0 && <span className="text-amber-600" title="Diurna">{h.day}D</span>}
-                                      {h.night > 0 && <span className="text-indigo-600" title="Nocturna">{h.night}N</span>}
-                                      {h.holidayDay > 0 && <span className="text-rose-600" title="Festiva Diurna">{h.holidayDay}FD</span>}
-                                      {h.holidayNight > 0 && <span className="text-purple-600" title="Festiva Nocturna">{h.holidayNight}FN</span>}
+                                      {h.day > 0 && <span className="text-amber-600 font-bold" title="Diurna">{h.day}D</span>}
+                                      {h.night > 0 && <span className="text-indigo-600 font-bold" title="Nocturna">{h.night}N</span>}
+                                      {h.holidayDay > 0 && <span className="text-rose-600 font-bold" title="Festiva Diurna">{h.holidayDay}FD</span>}
+                                      {h.holidayNight > 0 && <span className="text-purple-600 font-bold" title="Festiva Nocturna">{h.holidayNight}FN</span>}
                                     </div>
                                     {(h.extraDay + h.extraNight + h.extraHolidayDay + h.extraHolidayNight) > 0 && (
-                                      <div className="text-[9px] text-amber-500 mt-0.5 border-t border-amber-50 pt-0.5 flex flex-wrap gap-x-2">
-                                        <span className="font-black">ADICIONAL:</span>
+                                      <div className="text-[9px] text-rose-500 mt-0.5 border-t border-rose-100 pt-0.5 flex flex-wrap gap-x-2">
+                                        <span className="font-black italic text-rose-600">EXCED:</span>
                                         {h.extraDay > 0 && <span>{h.extraDay}ED</span>}
                                         {h.extraNight > 0 && <span>{h.extraNight}EN</span>}
                                         {h.extraHolidayDay > 0 && <span>{h.extraHolidayDay}EFD</span>}
@@ -4262,25 +4511,33 @@ function MainApp() {
                                   extraHolidayNight: extraType === 'avaVirtual' ? dist.extra.holidayNight : 0
                                 };
 
-                                return (
-                                  <div className="flex flex-col">
-                                    <div className="flex flex-wrap gap-x-2">
-                                      {a.day > 0 && <span className="text-amber-600" title="AVA/Virt Diurna">{a.day}D</span>}
-                                      {a.night > 0 && <span className="text-indigo-600" title="AVA/Virt Nocturna">{a.night}N</span>}
-                                      {a.holidayDay > 0 && <span className="text-rose-600" title="AVA/Virt Festiva Diurna">{a.holidayDay}FD</span>}
-                                      {a.holidayNight > 0 && <span className="text-purple-600" title="AVA/Virt Festiva Nocturna">{a.holidayNight}FN</span>}
-                                    </div>
-                                    {(a.extraDay + a.extraNight + a.extraHolidayDay + a.extraHolidayNight) > 0 && (
-                                      <div className="text-[9px] text-amber-500 mt-0.5 border-t border-amber-50 pt-0.5 flex flex-wrap gap-x-2">
-                                        <span className="font-black">ADICIONAL:</span>
-                                        {a.extraDay > 0 && <span>{a.extraDay}ED</span>}
-                                        {a.extraNight > 0 && <span>{a.extraNight}EN</span>}
-                                        {a.extraHolidayDay > 0 && <span>{a.extraHolidayDay}EFD</span>}
-                                        {a.extraHolidayNight > 0 && <span>{a.extraHolidayNight}EFN</span>}
-                                      </div>
-                                    )}
-                                  </div>
-                                );
+                                 const dayTotalAVA = (a.day + a.night + a.holidayDay + a.holidayNight) + 
+                                               (a.extraDay + a.extraNight + a.extraHolidayDay + a.extraHolidayNight);
+
+                                 return (
+                                   <div className="flex flex-col">
+                                     <div className="mb-1">
+                                       <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-1 py-0.5 rounded border border-slate-100">
+                                         DÍA: {dayTotalAVA}h
+                                       </span>
+                                     </div>
+                                     <div className="flex flex-wrap gap-x-2">
+                                       {a.day > 0 && <span className="text-amber-600 font-bold" title="AVA/Virt Diurna">{a.day}D</span>}
+                                       {a.night > 0 && <span className="text-indigo-600 font-bold" title="AVA/Virt Nocturna">{a.night}N</span>}
+                                       {a.holidayDay > 0 && <span className="text-rose-600 font-bold" title="AVA/Virt Festiva Diurna">{a.holidayDay}FD</span>}
+                                       {a.holidayNight > 0 && <span className="text-purple-600 font-bold" title="AVA/Virt Festiva Nocturna">{a.holidayNight}FN</span>}
+                                     </div>
+                                     {(a.extraDay + a.extraNight + a.extraHolidayDay + a.extraHolidayNight) > 0 && (
+                                       <div className="text-[9px] text-rose-500 mt-0.5 border-t border-rose-100 pt-0.5 flex flex-wrap gap-x-2">
+                                         <span className="font-black italic text-rose-600">EXCED:</span>
+                                         {a.extraDay > 0 && <span>{a.extraDay}ED</span>}
+                                         {a.extraNight > 0 && <span>{a.extraNight}EN</span>}
+                                         {a.extraHolidayDay > 0 && <span>{a.extraHolidayDay}EFD</span>}
+                                         {a.extraHolidayNight > 0 && <span>{a.extraHolidayNight}EFN</span>}
+                                       </div>
+                                     )}
+                                   </div>
+                                 );
                               })()}
                             </td>
                             <td className="p-4 text-xs font-mono font-bold">
@@ -4300,7 +4557,9 @@ function MainApp() {
                             </td>
                             <td className="p-4 text-xs font-mono">
                               {(() => {
-                                const shiftValue = calculateShiftValue(record, results.calculationRates, results.all.recordDistributions[record.id]);
+                                const dist = results.all.recordDistributions[record.id];
+                                const isAVAMain = record.isAVAShift || record.isVirtualShift || (Object.values(record.ava || {}).some(v => v > 0) && Object.values(record.hours || {}).every(v => v === 0));
+                                const shiftValue = calculateShiftValue({ ...record, isAVAShift: isAVAMain }, results.calculationRates, dist);
                                 const grossShift = shiftValue.base + shiftValue.service + shiftValue.extraSurcharge + shiftValue.avaVirtual;
                                 const netShift = grossShift * (1 - results.all.effectiveDeductionRate);
                                 
@@ -4338,17 +4597,17 @@ function MainApp() {
                             <td className="p-4 text-right flex items-center justify-end gap-2">
                               <button 
                                 onClick={() => editRecord(record)}
-                                className="p-2 text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                                className="p-3 text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50 rounded-xl transition-all active:scale-90 border border-transparent hover:border-indigo-100"
                                 title="Editar registro"
                               >
-                                <Edit className="w-4 h-4" />
+                                <Edit className="w-5 h-5" />
                               </button>
                               <button 
                                 onClick={() => removeRecord(record.id)}
-                                className="p-2 text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                                className="p-3 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-xl transition-all active:scale-90 border border-transparent hover:border-rose-100"
                                 title="Eliminar registro"
                               >
-                                <Trash2 className="w-4 h-4" />
+                                <Trash2 className="w-5 h-5" />
                               </button>
                             </td>
                           </motion.tr>
@@ -4359,165 +4618,135 @@ function MainApp() {
                   {(viewingArchive ? viewingArchive.records : records).length > 0 && (
                     <tfoot className="bg-slate-50 border-t-2 border-slate-200">
                       <tr>
-                        <td colSpan={3} className="p-4 text-right text-[10px] font-bold text-slate-400 uppercase tracking-widest align-top">
-                          Totales del Periodo:
+                        <td colSpan={3} className="p-4 text-right text-xs font-bold text-slate-500 uppercase tracking-widest align-middle">
+                          Totales Consulta:
                         </td>
-                        <td className="p-4 align-top">
-                          <div className="flex flex-col gap-2">
+                        <td colSpan={1} className="p-4 align-middle">
+                          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                             <div className="flex flex-col">
-                              <span className="text-xs font-mono font-black text-indigo-600">{results.all.totalMonthlyHours.toFixed(1)}h</span>
-                              <span className="text-[9px] font-bold text-slate-400 uppercase">Horas Consulta</span>
+                              <span className="text-[10px] font-bold text-slate-400 uppercase">Diurnas</span>
+                              <span className="text-base font-mono font-black text-amber-600">{results.all.hoursBreakdown.day.toFixed(1)}h</span>
                             </div>
-                            <div className="grid grid-cols-2 gap-x-2 text-[8px] font-bold uppercase tracking-tighter">
-                              <span className="text-amber-600">D: {results.all.hoursBreakdown.day.toFixed(1)}h</span>
-                              <span className="text-indigo-600">N: {results.all.hoursBreakdown.night.toFixed(1)}h</span>
-                              <span className="text-rose-600">DF: {results.all.hoursBreakdown.holidayDay.toFixed(1)}h</span>
-                              <span className="text-purple-600">NF: {results.all.hoursBreakdown.holidayNight.toFixed(1)}h</span>
-                              <span className="text-amber-700">ED: {results.all.hoursBreakdown.extraDay.toFixed(1)}h</span>
-                              <span className="text-indigo-700">EN: {results.all.hoursBreakdown.extraNight.toFixed(1)}h</span>
-                              <span className="text-rose-700">EFD: {results.all.hoursBreakdown.extraHolidayDay.toFixed(1)}h</span>
-                              <span className="text-purple-700">EFN: {results.all.hoursBreakdown.extraHolidayNight.toFixed(1)}h</span>
+                            <div className="flex flex-col">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase">Nocturnas</span>
+                              <span className="text-base font-mono font-black text-indigo-600">{results.all.hoursBreakdown.night.toFixed(1)}h</span>
                             </div>
-                            <div className="pt-1 border-t border-slate-200">
-                              <span className="text-[9px] font-bold text-slate-600">{formatCurrency(results.all.totalH)}</span>
+                            <div className="flex flex-col">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase">Fest. Diu.</span>
+                              <span className="text-base font-mono font-black text-rose-600">{results.all.hoursBreakdown.holidayDay.toFixed(1)}h</span>
+                            </div>
+                            <div className="flex flex-col">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase">Fest. Noc.</span>
+                              <span className="text-base font-mono font-black text-purple-600">{results.all.hoursBreakdown.holidayNight.toFixed(1)}h</span>
                             </div>
                           </div>
                         </td>
-                        <td className="p-4 align-top">
-                          <div className="flex flex-col gap-2">
+                          <td className="p-4 text-right align-middle bg-slate-50">
                             <div className="flex flex-col">
-                              <span className="text-xs font-mono font-black text-violet-600">{results.all.totalMonthlyAVA.toFixed(1)}h</span>
-                              <span className="text-[9px] font-bold text-slate-400 uppercase">Horas AVA/Virtual</span>
+                              <span className="text-[10px] font-bold text-slate-400 uppercase">Horas Extra</span>
+                              <span className="text-sm font-mono font-bold text-amber-700">
+                                {(results.all.hoursBreakdown.extraDay + results.all.hoursBreakdown.extraNight + results.all.hoursBreakdown.extraHolidayDay + results.all.hoursBreakdown.extraHolidayNight).toFixed(1)}h
+                              </span>
                             </div>
-                            <div className="grid grid-cols-2 gap-x-2 text-[8px] font-bold uppercase tracking-tighter">
-                              <span className="text-amber-600">D: {results.all.avaBreakdown.day.toFixed(1)}h</span>
-                              <span className="text-indigo-600">N: {results.all.avaBreakdown.night.toFixed(1)}h</span>
-                              <span className="text-rose-600">DF: {results.all.avaBreakdown.holidayDay.toFixed(1)}h</span>
-                              <span className="text-purple-600">NF: {results.all.avaBreakdown.holidayNight.toFixed(1)}h</span>
-                              <span className="text-amber-700">ED: {results.all.avaBreakdown.extraDay.toFixed(1)}h</span>
-                              <span className="text-indigo-700">EN: {results.all.avaBreakdown.extraNight.toFixed(1)}h</span>
-                              <span className="text-rose-700">EFD: {results.all.avaBreakdown.extraHolidayDay.toFixed(1)}h</span>
-                              <span className="text-purple-700">EFN: {results.all.avaBreakdown.extraHolidayNight.toFixed(1)}h</span>
-                            </div>
-                            <div className="pt-1 border-t border-slate-200">
-                              <span className="text-[9px] font-bold text-slate-600">{formatCurrency(results.all.totalAVA)}</span>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="p-4 align-top">
-                          <div className="flex flex-col gap-2">
+                          </td>
+                          <td className="p-4 text-right align-middle bg-indigo-50">
                             <div className="flex flex-col">
-                              <span className="text-xs font-mono font-black text-emerald-600">{results.all.totalMonthlyPatients} Pac.</span>
-                              <span className="text-[9px] font-bold text-slate-400 uppercase">Pacientes</span>
+                              <span className="text-[10px] font-bold text-indigo-400 uppercase">Valor Parcial</span>
+                              <span className="text-base font-bold text-indigo-700">{formatCurrency(results.all.totalH)}</span>
                             </div>
-                            <div className="grid grid-cols-2 gap-x-2 text-[8px] font-bold uppercase tracking-tighter">
-                              <span className="text-amber-600">D: {results.all.patientsBreakdown.day}</span>
-                              <span className="text-indigo-600">N: {results.all.patientsBreakdown.night}</span>
-                              <span className="text-rose-600">DF: {results.all.patientsBreakdown.holidayDay}</span>
-                              <span className="text-purple-600">NF: {results.all.patientsBreakdown.holidayNight}</span>
-                            </div>
-                            <div className="pt-1 border-t border-slate-200">
-                              <span className="text-[9px] font-bold text-slate-600">{formatCurrency(results.all.totalP)}</span>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="p-4 align-top">
-                          <div className="flex flex-col gap-1">
-                            <span className="text-xs font-mono font-black text-slate-800">{formatCurrency(results.all.gross)}</span>
-                            <span className="text-[9px] font-bold text-slate-400 uppercase">Bruto Total</span>
-                            
-                            <div className="mt-2 p-2 bg-slate-50 rounded-lg border border-slate-100">
-                              <p className="text-[8px] font-bold text-slate-600 uppercase mb-1">Resumen Horas</p>
-                              <div className="flex flex-col gap-1 text-[8px] font-bold text-slate-500">
-                                <div className="flex flex-col border-b border-slate-200 pb-1">
-                                  <div className="flex justify-between text-indigo-600">
-                                    <span>Consulta:</span> 
-                                    <span>{results.all.hoursBreakdown.day + results.all.hoursBreakdown.night + results.all.hoursBreakdown.holidayDay + results.all.hoursBreakdown.holidayNight + results.all.hoursBreakdown.extraDay + results.all.hoursBreakdown.extraNight + results.all.hoursBreakdown.extraHolidayDay + results.all.hoursBreakdown.extraHolidayNight}h</span>
-                                  </div>
-                                  <div className="grid grid-cols-4 gap-x-1 text-[7px] opacity-70">
-                                    <span>D: {results.all.hoursBreakdown.day}</span>
-                                    <span>N: {results.all.hoursBreakdown.night}</span>
-                                    <span>DF: {results.all.hoursBreakdown.holidayDay}</span>
-                                    <span>NF: {results.all.hoursBreakdown.holidayNight}</span>
-                                    <span>ED: {results.all.hoursBreakdown.extraDay}</span>
-                                    <span>EN: {results.all.hoursBreakdown.extraNight}</span>
-                                    <span>EFD: {results.all.hoursBreakdown.extraHolidayDay}</span>
-                                    <span>EFN: {results.all.hoursBreakdown.extraHolidayNight}</span>
-                                  </div>
-                                </div>
-                                <div className="flex flex-col">
-                                  <div className="flex justify-between text-violet-600">
-                                    <span>AVA/Virtual:</span> 
-                                    <span>{results.all.avaBreakdown.day + results.all.avaBreakdown.night + results.all.avaBreakdown.holidayDay + results.all.avaBreakdown.holidayNight + results.all.avaBreakdown.extraDay + results.all.avaBreakdown.extraNight + results.all.avaBreakdown.extraHolidayDay + results.all.avaBreakdown.extraHolidayNight}h</span>
-                                  </div>
-                                  <div className="grid grid-cols-4 gap-x-1 text-[7px] opacity-70">
-                                    <span>D: {results.all.avaBreakdown.day}</span>
-                                    <span>N: {results.all.avaBreakdown.night}</span>
-                                    <span>DF: {results.all.avaBreakdown.holidayDay}</span>
-                                    <span>NF: {results.all.avaBreakdown.holidayNight}</span>
-                                    <span>ED: {results.all.avaBreakdown.extraDay}</span>
-                                    <span>EN: {results.all.avaBreakdown.extraNight}</span>
-                                    <span>EFD: {results.all.avaBreakdown.extraHolidayDay}</span>
-                                    <span>EFN: {results.all.avaBreakdown.extraHolidayNight}</span>
-                                  </div>
-                                </div>
+                          </td>
+                          <td className="bg-slate-50 border-l border-slate-200"></td>
+                        </tr>
+                        <tr className="border-b border-slate-100">
+                          <td colSpan={3} className="p-4 text-right text-sm font-black text-slate-700 uppercase tracking-tight align-middle bg-slate-50">
+                            Totales AVA/Virtual:
+                          </td>
+                          <td colSpan={1} className="p-4 align-middle">
+                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                              <div className="flex flex-col">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase">AVA D.</span>
+                                <span className="text-base font-mono font-black text-amber-600">{results.all.avaBreakdown.day.toFixed(1)}h</span>
+                              </div>
+                              <div className="flex flex-col">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase">AVA N.</span>
+                                <span className="text-base font-mono font-black text-indigo-600">{results.all.avaBreakdown.night.toFixed(1)}h</span>
+                              </div>
+                              <div className="flex flex-col">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase">AVA FD.</span>
+                                <span className="text-base font-mono font-black text-rose-600">{results.all.avaBreakdown.holidayDay.toFixed(1)}h</span>
+                              </div>
+                              <div className="flex flex-col">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase">AVA FN.</span>
+                                <span className="text-base font-mono font-black text-purple-600">{results.all.avaBreakdown.holidayNight.toFixed(1)}h</span>
                               </div>
                             </div>
-
-                            <div className="mt-2 p-2 bg-slate-50 rounded-lg border border-slate-100">
-                              <p className="text-[8px] font-bold text-slate-600 uppercase mb-1">Acumulado Total</p>
-                              <div className="flex justify-between items-center">
-                                <span className="text-xs font-mono font-black text-slate-700">{results.all.totalAccumulatedHours}h</span>
-                                <span className="text-[7px] font-bold text-slate-400 uppercase">Total Periodo</span>
+                          </td>
+                          <td className="p-4 text-right align-middle bg-slate-50">
+                            <div className="flex flex-col">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase">Total AVA</span>
+                              <span className="text-sm font-mono font-bold text-violet-700">{results.all.totalMonthlyAVA.toFixed(1)}h</span>
+                            </div>
+                          </td>
+                          <td className="p-4 text-right align-middle bg-violet-50">
+                            <div className="flex flex-col">
+                              <span className="text-[10px] font-bold text-violet-400 uppercase">Valor Parcial</span>
+                              <span className="text-base font-bold text-violet-700">{formatCurrency(results.all.totalAVA)}</span>
+                            </div>
+                          </td>
+                          <td className="bg-slate-50 border-l border-slate-200"></td>
+                        </tr>
+                        <tr className="border-b border-slate-200">
+                          <td colSpan={3} className="p-4 text-right text-sm font-black text-slate-700 uppercase tracking-tight align-middle bg-slate-50">
+                            Totales Pacientes:
+                          </td>
+                          <td colSpan={1} className="p-4 align-middle">
+                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                              <div className="flex flex-col">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase">P. Diu</span>
+                                <span className="text-base font-mono font-black text-amber-600">{results.all.patientsBreakdown.day}</span>
+                              </div>
+                              <div className="flex flex-col">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase">P. Noc</span>
+                                <span className="text-base font-mono font-black text-indigo-600">{results.all.patientsBreakdown.night}</span>
+                              </div>
+                              <div className="flex flex-col">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase">P. FD</span>
+                                <span className="text-base font-mono font-black text-rose-600">{results.all.patientsBreakdown.holidayDay}</span>
+                              </div>
+                              <div className="flex flex-col">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase">P. FN</span>
+                                <span className="text-base font-mono font-black text-purple-600">{results.all.patientsBreakdown.holidayNight}</span>
                               </div>
                             </div>
-
-                            <div className="mt-2 p-2 bg-indigo-50 rounded-lg border border-indigo-100">
-                              <p className="text-[8px] font-bold text-indigo-600 uppercase mb-1">Resumen Dinero</p>
-                              <div className="flex flex-col gap-1 text-[8px] font-bold text-slate-500">
-                                <div className="flex flex-col border-b border-indigo-100 pb-1">
-                                  <div className="flex justify-between text-indigo-600"><span>Consulta:</span> <span>{formatCurrency(results.all.totalH)}</span></div>
-                                  <div className="grid grid-cols-2 gap-x-2 text-[7px] opacity-70">
-                                    <span>D: {formatCurrency(results.all.hoursValues.day)}</span>
-                                    <span>N: {formatCurrency(results.all.hoursValues.night)}</span>
-                                    <span>DF: {formatCurrency(results.all.hoursValues.holidayDay)}</span>
-                                    <span>NF: {formatCurrency(results.all.hoursValues.holidayNight)}</span>
-                                    <span>ED: {formatCurrency(results.all.hoursValues.extraDay)}</span>
-                                    <span>EN: {formatCurrency(results.all.hoursValues.extraNight)}</span>
-                                    <span>EFD: {formatCurrency(results.all.hoursValues.extraHolidayDay)}</span>
-                                    <span>EFN: {formatCurrency(results.all.hoursValues.extraHolidayNight)}</span>
-                                  </div>
-                                </div>
-                                <div className="flex flex-col border-b border-indigo-100 pb-1">
-                                  <div className="flex justify-between text-violet-600"><span>AVA/Virtual:</span> <span>{formatCurrency(results.all.totalAVA)}</span></div>
-                                  <div className="grid grid-cols-2 gap-x-2 text-[7px] opacity-70">
-                                    <span>D: {formatCurrency(results.all.avaValues.day)}</span>
-                                    <span>N: {formatCurrency(results.all.avaValues.night)}</span>
-                                    <span>DF: {formatCurrency(results.all.avaValues.holidayDay)}</span>
-                                    <span>NF: {formatCurrency(results.all.avaValues.holidayNight)}</span>
-                                    <span>ED: {formatCurrency(results.all.avaValues.extraDay)}</span>
-                                    <span>EN: {formatCurrency(results.all.avaValues.extraNight)}</span>
-                                    <span>EFD: {formatCurrency(results.all.avaValues.extraHolidayDay)}</span>
-                                    <span>EFN: {formatCurrency(results.all.avaValues.extraHolidayNight)}</span>
-                                  </div>
-                                </div>
-                                <div className="flex flex-col">
-                                  <div className="flex justify-between text-emerald-600"><span>Pacientes:</span> <span>{formatCurrency(results.all.totalP)}</span></div>
-                                  <div className="grid grid-cols-2 gap-x-2 text-[7px] opacity-70">
-                                    <span>D: {formatCurrency(results.all.patientsValues.day)}</span>
-                                    <span>N: {formatCurrency(results.all.patientsValues.night)}</span>
-                                    <span>DF: {formatCurrency(results.all.patientsValues.holidayDay)}</span>
-                                    <span>NF: {formatCurrency(results.all.patientsValues.holidayNight)}</span>
-                                  </div>
-                                </div>
-                              </div>
+                          </td>
+                          <td className="p-4 text-right align-middle bg-slate-50">
+                            <div className="flex flex-col">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase">Total Pac.</span>
+                              <span className="text-sm font-mono font-bold text-emerald-700">{results.all.totalMonthlyPatients}</span>
                             </div>
-                          </div>
-                        </td>
-                        <td colSpan={2}></td>
-                      </tr>
-                    </tfoot>
-                  )}
+                          </td>
+                          <td className="p-4 text-right align-middle bg-emerald-50">
+                            <div className="flex flex-col">
+                              <span className="text-[10px] font-bold text-emerald-400 uppercase">Valor Parcial</span>
+                              <span className="text-base font-bold text-emerald-700">{formatCurrency(results.all.totalP)}</span>
+                            </div>
+                          </td>
+                          <td className="bg-slate-50 border-l border-slate-200"></td>
+                        </tr>
+                        {/* Grand Total Footer Row */}
+                        <tr className="bg-indigo-600 text-white border-t-2 border-indigo-700 shadow-inner">
+                          <td colSpan={5} className="p-6 text-right text-xl font-black uppercase tracking-widest align-middle">
+                            Total Devengado Mensual (Bruto):
+                          </td>
+                          <td className="p-6 text-right align-middle">
+                            <span className="text-3xl font-mono font-black">
+                              {formatCurrency(results.all.gross)}
+                            </span>
+                          </td>
+                          <td className="bg-indigo-700/30"></td>
+                        </tr>
+                      </tfoot>
+                    )}
                 </table>
               </div>
             </div>
@@ -4578,14 +4807,83 @@ function MainApp() {
               
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100 space-y-2">
-                  <div className="flex items-center gap-2 text-slate-600">
-                    <Clock className="w-4 h-4" />
-                    <span className="text-[10px] font-bold uppercase tracking-widest">Horas Totales</span>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-slate-600">
+                      <Clock className="w-4 h-4" />
+                      <span className="text-[10px] font-bold uppercase tracking-widest">Ingresos Brutos</span>
+                    </div>
+                    <button 
+                      onClick={() => setShowIncomeDetails(!showIncomeDetails)}
+                      className="p-1 hover:bg-slate-200 rounded-lg transition-colors text-slate-400"
+                    >
+                      <ChevronDown className={`w-4 h-4 transition-transform ${showIncomeDetails ? 'rotate-180' : ''}`} />
+                    </button>
                   </div>
-                  <p className="text-3xl font-bold text-slate-800">{results.all.totalAccumulatedHours}h</p>
+                  <p className="text-3xl font-bold text-slate-800">{formatCurrency(results.all.gross)}</p>
                   <p className="text-[10px] text-slate-400 uppercase font-bold tracking-tighter">
-                    Bruto: {formatCurrency(results.all.gross)}
+                    {results.all.totalAccumulatedHours}h Totales
                   </p>
+
+                  <AnimatePresence>
+                    {showIncomeDetails && (
+                      <motion.div 
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="pt-4 space-y-4 border-t border-slate-200 mt-4 overflow-hidden"
+                      >
+                        <div className="space-y-2">
+                          <div className="flex justify-between text-[10px]">
+                            <span className="text-slate-500">Base Consulta + Extras:</span>
+                            <span className="font-bold text-slate-800">{formatCurrency(results.all.grossBreakdown.consultationBase)}</span>
+                          </div>
+                          <div className="flex justify-between text-[10px]">
+                            <span className="text-violet-600 font-medium">AVA / Virtual:</span>
+                            <span className="font-bold text-violet-800">{formatCurrency(results.all.grossBreakdown.ava)}</span>
+                          </div>
+                          <div className="flex justify-between text-[10px]">
+                            <span className="text-emerald-600 font-medium">Servicio / Pacientes:</span>
+                            <span className="font-bold text-emerald-800">{formatCurrency(results.all.grossBreakdown.service)}</span>
+                          </div>
+                          <div className="flex justify-between text-[10px] pt-1 border-t border-slate-100">
+                            <span className="text-slate-400">Total Bruto Proyectado:</span>
+                            <span className="font-bold text-slate-900">{formatCurrency(results.all.gross)}</span>
+                          </div>
+                        </div>
+
+                        {/* Detailed Tipification Mini-Table */}
+                        <div className="bg-white p-3 rounded-xl border border-slate-100 space-y-2">
+                          <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Tipificación de Horas Proyectadas</p>
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[9px] font-bold">
+                            <div className="flex justify-between border-b border-slate-50">
+                              <span className="text-slate-400">Consulta D:</span>
+                              <span className="text-amber-600">{results.all.hoursBreakdown.day.toFixed(1)}h</span>
+                            </div>
+                            <div className="flex justify-between border-b border-slate-50">
+                              <span className="text-slate-400">Consulta N:</span>
+                              <span className="text-indigo-600">{results.all.hoursBreakdown.night.toFixed(1)}h</span>
+                            </div>
+                            <div className="flex justify-between border-b border-slate-50">
+                              <span className="text-slate-400">AVA D:</span>
+                              <span className="text-amber-600">{results.all.avaBreakdown.day.toFixed(1)}h</span>
+                            </div>
+                            <div className="flex justify-between border-b border-slate-50">
+                              <span className="text-slate-400">AVA N:</span>
+                              <span className="text-indigo-600">{results.all.avaBreakdown.night.toFixed(1)}h</span>
+                            </div>
+                            <div className="flex justify-between border-b border-slate-50">
+                              <span className="text-slate-400">Pacientes D:</span>
+                              <span className="text-amber-600">{results.all.patientsBreakdown.day}</span>
+                            </div>
+                            <div className="flex justify-between border-b border-slate-50">
+                              <span className="text-slate-400">Pacientes N:</span>
+                              <span className="text-indigo-600">{results.all.patientsBreakdown.night}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
                 
                 <div className="bg-indigo-600 p-6 rounded-3xl text-white space-y-2 shadow-xl shadow-indigo-100">
@@ -4598,12 +4896,81 @@ function MainApp() {
                 </div>
 
                 <div className="bg-rose-50 p-6 rounded-3xl border border-rose-100 space-y-2">
-                  <div className="flex items-center gap-2 text-rose-700">
-                    <TrendingDown className="w-4 h-4" />
-                    <span className="text-[10px] font-bold uppercase tracking-widest">Deducciones</span>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-rose-700">
+                      <TrendingDown className="w-4 h-4" />
+                      <span className="text-[10px] font-bold uppercase tracking-widest">Deducciones</span>
+                    </div>
+                    <button 
+                      onClick={() => setShowDeductionDetails(!showDeductionDetails)}
+                      className="p-1 hover:bg-rose-100 rounded-lg transition-colors text-rose-600"
+                    >
+                      <ChevronDown className={`w-4 h-4 transition-transform ${showDeductionDetails ? 'rotate-180' : ''}`} />
+                    </button>
                   </div>
                   <p className="text-3xl font-bold text-rose-800">{formatCurrency(results.all.totalDeductions)}</p>
                   <p className="text-[10px] text-rose-400 uppercase font-bold tracking-tighter">Legales + Otras</p>
+
+                  <AnimatePresence>
+                    {showDeductionDetails && (
+                      <motion.div 
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="pt-4 space-y-4 border-t border-rose-100 mt-4 overflow-hidden"
+                      >
+                        <div className="space-y-2">
+                          <p className="text-[9px] font-black text-rose-500 uppercase tracking-widest">Deducciones de Ley</p>
+                          <div className="flex justify-between text-[10px]">
+                            <span className="text-slate-500">Salud (4%):</span>
+                            <span className="font-bold text-rose-700">{formatCurrency(results.all.taxBreakdown.health)}</span>
+                          </div>
+                          <div className="flex justify-between text-[10px]">
+                            <span className="text-slate-500">Pensión (4%):</span>
+                            <span className="font-bold text-rose-700">{formatCurrency(results.all.taxBreakdown.pension)}</span>
+                          </div>
+                          {results.all.taxBreakdown.fsp > 0 && (
+                            <div className="flex justify-between text-[10px]">
+                              <span className="text-slate-500">F. Solidaridad Pens.:</span>
+                              <span className="font-bold text-rose-700">{formatCurrency(results.all.taxBreakdown.fsp)}</span>
+                            </div>
+                          )}
+                          <div className="flex justify-between text-[10px]">
+                            <span className="text-slate-500 font-bold">Retención en la Fuente:</span>
+                            <span className="font-bold text-rose-800">{formatCurrency(results.all.retefuente)}</span>
+                          </div>
+                          {results.all.taxBreakdown.additionalDeductions > 0 && (
+                            <div className="flex justify-between text-[10px] pt-1 border-t border-rose-100/50">
+                              <span className="text-slate-500">Otras Deducciones:</span>
+                              <span className="font-bold text-rose-700">{formatCurrency(results.all.taxBreakdown.additionalDeductions)}</span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="space-y-2 bg-white/50 p-3 rounded-2xl border border-rose-100/50">
+                          <p className="text-[9px] font-black text-indigo-500 uppercase tracking-widest">Detalle Rete-Fuente</p>
+                          <div className="flex justify-between text-[10px]">
+                            <span className="text-slate-500">Ingreso Neto Gravable:</span>
+                            <span className="font-bold text-slate-700">{formatCurrency(results.all.retefuenteBreakdown.netIncome)}</span>
+                          </div>
+                          {results.all.retefuenteBreakdown.dedPrepagada > 0 && (
+                            <div className="flex justify-between text-[10px]">
+                              <span className="text-emerald-600">Medicina Prepagada:</span>
+                              <span className="font-bold text-emerald-700">-{formatCurrency(results.all.retefuenteBreakdown.dedPrepagada)}</span>
+                            </div>
+                          )}
+                          <div className="flex justify-between text-[10px]">
+                            <span className="text-slate-500">Exento 25% Ley:</span>
+                            <span className="font-bold text-slate-700">-{formatCurrency(results.all.retefuenteBreakdown.exempt25)}</span>
+                          </div>
+                          <div className="flex justify-between text-[10px] pt-1 border-t border-indigo-100/50">
+                            <span className="text-indigo-600 font-bold uppercase text-[8px]">Base en UVT:</span>
+                            <span className="font-bold text-indigo-700">{results.all.retefuenteBreakdown.baseUVT.toFixed(2)} UVT</span>
+                          </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
 
                 <div className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100 space-y-2">
@@ -4712,156 +5079,163 @@ function MainApp() {
                 </div>
 
                 {/* Main Totals Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                   <div className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100 space-y-2">
                     <div className="flex items-center gap-2 text-emerald-700">
                       <TrendingUp className="w-4 h-4" />
                       <span className="text-[10px] font-bold uppercase tracking-widest">Total Devengado (Mes)</span>
                     </div>
                     <p className="text-3xl font-bold text-emerald-800">{formatCurrency(results.definitive.gross)}</p>
+                    <div className="text-[10px] font-bold text-slate-500 uppercase pt-2 border-t border-emerald-100">
+                      <div className="flex justify-between"><span>Bruto Turnos:</span> <span>{formatCurrency(results.definitive.totalH + results.definitive.totalAVA)}</span></div>
+                      <div className="flex justify-between"><span>Servicio/Pac:</span> <span>{formatCurrency(results.definitive.totalP)}</span></div>
+                    </div>
                   </div>
-                <div className="bg-rose-50 p-6 rounded-3xl border border-rose-100 space-y-2">
+                  
+                  <div className="bg-emerald-500 p-6 rounded-3xl text-white space-y-2 shadow-xl shadow-emerald-100">
+                    <div className="flex items-center gap-2 opacity-80">
+                      <CheckIcon className="w-4 h-4" />
+                      <span className="text-[10px] font-bold uppercase tracking-widest">Ganancia Total Real (Patrimonial)</span>
+                    </div>
+                    <p className="text-3xl font-bold">{formatCurrency(results.definitive.net)}</p>
+                    <div className="text-[10px] font-bold opacity-80 uppercase pt-2 border-t border-emerald-400">
+                      <div className="flex justify-between"><span>Prima:</span> <span>{formatCurrency(results.definitive.primaProporcional)}</span></div>
+                      <div className="flex justify-between"><span>Cesantías:</span> <span>{formatCurrency(results.definitive.cesantiasProporcional)}</span></div>
+                    </div>
+                  </div>
+
+                  <div className="bg-rose-50 p-6 rounded-3xl border border-rose-100 space-y-2">
                     <div className="flex items-center gap-2 text-rose-700">
                       <TrendingDown className="w-4 h-4" />
                       <span className="text-[10px] font-bold uppercase tracking-widest">Total Deducciones</span>
                     </div>
                     <p className="text-3xl font-bold text-rose-800">{formatCurrency(results.definitive.totalDeductions)}</p>
-                    <div className="flex items-center gap-4 text-[9px] font-bold text-rose-400 uppercase tracking-widest pt-1">
-                      <span>Legales: {formatCurrency(results.definitive.legalDeductions)}</span>
-                      <span>Otras: {formatCurrency(results.definitive.additionalDeductions)}</span>
+                    <div className="text-[10px] font-bold text-rose-500 uppercase pt-2 border-t border-rose-100">
+                      <div className="flex justify-between"><span>Salud/Pens:</span> <span>{formatCurrency(results.definitive.taxBreakdown.health + results.definitive.taxBreakdown.pension)}</span></div>
+                      <div className="flex justify-between"><span>Retefuente:</span> <span>{formatCurrency(results.definitive.retefuente)}</span></div>
                     </div>
                   </div>
+
                   <div className="bg-indigo-600 p-6 rounded-3xl text-white space-y-2 shadow-xl shadow-indigo-100">
                     <div className="flex items-center gap-2 opacity-80">
                       <Wallet className="w-4 h-4" />
                       <span className="text-[10px] font-bold uppercase tracking-widest">Neto a Recibir (Caja)</span>
                     </div>
                     <p className="text-3xl font-bold">{formatCurrency(results.definitive.netCash)}</p>
-                    <p className="text-[9px] opacity-70 italic">Dinero estimado en tu cuenta bancaria.</p>
+                    <div className="text-[10px] font-bold opacity-80 uppercase pt-2 border-t border-indigo-400">
+                      <div className="flex justify-between"><span>Afectación IBC:</span> <span>{formatCurrency(results.definitive.ibc)}</span></div>
+                    </div>
                   </div>
                 </div>
 
-                <div className="p-5 bg-indigo-50 rounded-3xl border border-indigo-100">
-                  <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest mb-1">Ganancia Total Real (Patrimonial)</p>
-                  <p className="text-2xl font-black text-indigo-700">{formatCurrency(results.definitive.totalPatrimonial)}</p>
-                  <p className="text-[10px] text-indigo-400 mt-1 italic">
-                    Este valor incluye el ahorro de Prima, Vacaciones y Cesantías que estás acumulando este mes.
-                  </p>
+                {/* Detailed Breakdown Table (Tipificación) */}
+                <div className="p-6 bg-slate-50 rounded-3xl border border-slate-200 space-y-4">
+                  <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] flex items-center gap-2">
+                    <div className="w-4 h-1 bg-indigo-600" />
+                    Tipificación de Horas y Pacientes (Definitivos)
+                  </h4>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[10px] uppercase font-bold text-slate-600">
+                      <thead>
+                        <tr className="border-b border-slate-200">
+                          <th className="p-2 text-left">Categoría</th>
+                          <th className="p-2 text-center text-amber-600">Diurnas</th>
+                          <th className="p-2 text-center text-indigo-600">Nocturnas</th>
+                          <th className="p-2 text-center text-rose-600">D. Festival</th>
+                          <th className="p-2 text-center text-purple-600">N. Festival</th>
+                          <th className="p-2 text-right">Valor Parcial</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        <tr>
+                          <td className="p-2 font-black text-slate-800">Horas Consulta (Bitácora)</td>
+                          <td className="p-2 text-center font-mono">{results.definitive.hoursBreakdown.day.toFixed(1)}h</td>
+                          <td className="p-2 text-center font-mono">{results.definitive.hoursBreakdown.night.toFixed(1)}h</td>
+                          <td className="p-2 text-center font-mono">{results.definitive.hoursBreakdown.holidayDay.toFixed(1)}h</td>
+                          <td className="p-2 text-center font-mono">{results.definitive.hoursBreakdown.holidayNight.toFixed(1)}h</td>
+                          <td className="p-2 text-right font-mono text-indigo-600">{formatCurrency(results.definitive.totalH)}</td>
+                        </tr>
+                        <tr>
+                          <td className="p-2 font-black text-slate-800">Horas AVA / Virtual</td>
+                          <td className="p-2 text-center font-mono">{results.definitive.avaBreakdown.day.toFixed(1)}h</td>
+                          <td className="p-2 text-center font-mono">{results.definitive.avaBreakdown.night.toFixed(1)}h</td>
+                          <td className="p-2 text-center font-mono">{results.definitive.avaBreakdown.holidayDay.toFixed(1)}h</td>
+                          <td className="p-2 text-center font-mono">{results.definitive.avaBreakdown.holidayNight.toFixed(1)}h</td>
+                          <td className="p-2 text-right font-mono text-violet-600">{formatCurrency(results.definitive.totalAVA)}</td>
+                        </tr>
+                        <tr>
+                          <td className="p-2 font-black text-slate-800">Pacientes Atendidos</td>
+                          <td className="p-2 text-center font-mono">{results.definitive.patientsBreakdown.day}</td>
+                          <td className="p-2 text-center font-mono">{results.definitive.patientsBreakdown.night}</td>
+                          <td className="p-2 text-center font-mono">{results.definitive.patientsBreakdown.holidayDay}</td>
+                          <td className="p-2 text-center font-mono">{results.definitive.patientsBreakdown.holidayNight}</td>
+                          <td className="p-2 text-right font-mono text-emerald-600">{formatCurrency(results.definitive.totalP)}</td>
+                        </tr>
+                      </tbody>
+                      <tfoot>
+                        <tr className="bg-slate-200/50">
+                          <td className="p-2 font-black">TOTALES BRUTOS</td>
+                          <td colSpan={4}></td>
+                          <td className="p-2 text-right font-mono font-black text-slate-900">{formatCurrency(results.definitive.gross)}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
                 </div>
 
-                {/* Detailed Breakdown */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
-                  {/* Income Breakdown */}
-                  <div className="space-y-6">
-                    <div className="flex items-center gap-2 text-emerald-600">
-                      <PlusCircle className="w-5 h-5" />
-                      <h4 className="font-bold uppercase tracking-wider text-sm">Ingresos Detallados</h4>
-                    </div>
-                    <div className="space-y-4">
-                      <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                        <span className="text-sm font-medium text-slate-600">Sueldo Básico (Turnos)</span>
-                        <span className="font-bold text-slate-800">{formatCurrency(results.definitive.gross)}</span>
+                {/* Linear Detailed Breakdown (Excel Style) */}
+                <div className="space-y-4">
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200">
+                    <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
+                      <div className="w-4 h-1 bg-indigo-600" />
+                      Desglose Detallado de Ingresos (Prestaciones Sociales)
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2 text-sm font-medium text-slate-700">
+                      <div className="flex justify-between border-b border-slate-200 py-1">
+                        <span className="text-slate-500">Prima Proporcional Mensual:</span>
+                        <span className="font-mono text-indigo-600 font-bold">{formatCurrency(results.definitive.primaProporcional)}</span>
                       </div>
-                      <div className="flex flex-col gap-1">
-                        <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                          <span className="text-sm font-medium text-slate-600">Prima Proporcional</span>
-                          <span className="font-bold text-slate-800">{formatCurrency(results.definitive.primaProporcional)}</span>
-                        </div>
-                        {results.definitive.primaSemestral > 0 && (
-                          <div className="flex items-center justify-between px-4 text-[10px] text-indigo-500 font-bold italic">
-                            <span>Estimado a Recibir en Junio/Dic (50% promedio):</span>
-                            <span>{formatCurrency(results.definitive.primaSemestral)}</span>
-                          </div>
-                        )}
+                      <div className="flex justify-between border-b border-slate-200 py-1">
+                        <span className="text-slate-500">Cesantías Proporcionales Mensuales:</span>
+                        <span className="font-mono text-indigo-600 font-bold">{formatCurrency(results.definitive.cesantiasProporcional)}</span>
                       </div>
-                      <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                        <span className="text-sm font-medium text-slate-600">Cesantías Proporcionales</span>
-                        <span className="font-bold text-slate-800">{formatCurrency(results.definitive.cesantiasProporcional)}</span>
+                      <div className="flex justify-between border-b border-slate-200 py-1">
+                        <span className="text-slate-500">Intereses sobre Cesantías (1% mensual):</span>
+                        <span className="font-mono text-indigo-600 font-bold">{formatCurrency(results.definitive.interesesCesantias)}</span>
                       </div>
-                      <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                        <span className="text-sm font-medium text-slate-600">Intereses Cesantías</span>
-                        <span className="font-bold text-slate-800">{formatCurrency(results.definitive.interesesCesantias)}</span>
-                      </div>
-                      <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                        <span className="text-sm font-medium text-slate-600">Vacaciones Proporcionales</span>
-                        <span className="font-bold text-slate-800">{formatCurrency(results.definitive.vacacionesProporcional)}</span>
+                      <div className="flex justify-between border-b border-slate-200 py-1">
+                        <span className="text-slate-500">Vacaciones Proporcionales Mensuales:</span>
+                        <span className="font-mono text-indigo-600 font-bold">{formatCurrency(results.definitive.vacacionesProporcional)}</span>
                       </div>
                     </div>
                   </div>
 
-                  {/* Deductions Breakdown */}
-                  <div className="space-y-6">
-                    <div className="flex items-center gap-2 text-rose-600">
-                      <MinusCircle className="w-5 h-5" />
-                      <h4 className="font-bold uppercase tracking-wider text-sm">Deducciones Detalladas</h4>
-                    </div>
-                    <div className="space-y-4">
-                      <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                        <div className="flex flex-col">
-                          <span className="text-sm font-medium text-slate-600">Salud (4%)</span>
-                          <span className="text-[10px] text-slate-400">IBC: {formatCurrency(results.definitive.ibc)}</span>
-                        </div>
-                        <span className="font-bold text-rose-700">-{formatCurrency(results.definitive.health)}</span>
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200">
+                    <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
+                      <div className="w-4 h-1 bg-rose-600" />
+                      Desglose Detallado de Deducciones
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2 text-sm font-medium text-slate-700">
+                      <div className="flex justify-between border-b border-slate-200 py-1">
+                        <span className="text-slate-500">Aporte a Salud (4% de IBC):</span>
+                        <span className="font-mono text-rose-600 font-bold">-{formatCurrency(results.definitive.taxBreakdown.health)}</span>
                       </div>
-                      <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                        <span className="text-sm font-medium text-slate-600">Pensión (4%)</span>
-                        <span className="font-bold text-rose-700">-{formatCurrency(results.definitive.pension)}</span>
+                      <div className="flex justify-between border-b border-slate-200 py-1">
+                        <span className="text-slate-500">Aporte a Pensión (4% de IBC):</span>
+                        <span className="font-mono text-rose-600 font-bold">-{formatCurrency(results.definitive.taxBreakdown.pension)}</span>
                       </div>
-                      <div className="flex flex-col gap-1">
-                        <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                          <span className="text-sm font-medium text-slate-600">Caja de Compensación (4%)</span>
-                          <span className="font-bold text-slate-800">{formatCurrency(results.definitive.caja)}</span>
-                        </div>
-                        <p className="text-[10px] text-slate-400 italic px-1">
-                          * El aporte a la Caja de Compensación es asumido por el empleador.
-                        </p>
+                      <div className="flex justify-between border-b border-slate-200 py-1">
+                        <span className="text-slate-500">Fondo Solidaridad Pensional (FSP):</span>
+                        <span className="font-mono text-rose-600 font-bold">-{formatCurrency(results.definitive.taxBreakdown.fsp)}</span>
                       </div>
-                      {results.definitive.fsp > 0 && (
-                        <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                          <span className="text-sm font-medium text-slate-600">Fondo Solidaridad Pensional</span>
-                          <span className="font-bold text-rose-700">-{formatCurrency(results.definitive.fsp)}</span>
-                        </div>
-                      )}
-                      {results.definitive.retefuente > 0 && (
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                            <div className="flex flex-col">
-                              <div className="flex items-center gap-2">
-                                <span className="text-sm font-medium text-slate-600">Retención en la Fuente</span>
-                                {results.definitive.gross > 0 && (
-                                  <span className="text-[10px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-100">
-                                    {((results.definitive.retefuente / results.definitive.gross) * 100).toFixed(2)}%
-                                  </span>
-                                )}
-                              </div>
-                              <div className="flex flex-wrap gap-2 mt-1">
-                                {rates.payroll.dependents && (
-                                  <span className="text-[8px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded border border-indigo-100 font-bold uppercase">Dependientes</span>
-                                )}
-                                {rates.payroll.usePrepagada && rates.payroll.prepagada > 0 && (
-                                  <span className="text-[8px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded border border-indigo-100 font-bold uppercase">Med. Prepagada</span>
-                                )}
-                                {rates.payroll.useInteresesVivienda && rates.payroll.interesesVivienda > 0 && (
-                                  <span className="text-[8px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded border border-indigo-100 font-bold uppercase">Int. Vivienda</span>
-                                )}
-                                {rates.payroll.usePensionVoluntaria && rates.payroll.pensionVoluntaria > 0 && (
-                                  <span className="text-[8px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded border border-indigo-100 font-bold uppercase">Pens. Voluntaria</span>
-                                )}
-                              </div>
-                            </div>
-                            <span className="font-bold text-rose-700">-{formatCurrency(results.definitive.retefuente)}</span>
-                          </div>
-                          {rates.payroll.useManualRetefuente && (
-                            <p className="px-1 text-[9px] text-amber-600 font-bold italic">
-                              * Aplicado porcentaje manual del {rates.payroll.manualRetefuentePct}%
-                            </p>
-                          )}
-                        </div>
-                      )}
-                      {results.definitive.additionalDeductions > 0 && (
-                        <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                          <span className="text-sm font-medium text-slate-600">Otras Deducciones</span>
-                          <span className="font-bold text-rose-700">-{formatCurrency(results.definitive.additionalDeductions)}</span>
+                      <div className="flex justify-between border-b border-slate-200 py-1">
+                        <span className="text-slate-500">Retención en la Fuente:</span>
+                        <span className="font-mono text-rose-600 font-bold">-{formatCurrency(results.definitive.retefuente)}</span>
+                      </div>
+                      {results.definitive.taxBreakdown.additionalDeductions > 0 && (
+                        <div className="flex justify-between border-b border-slate-200 py-1">
+                          <span className="text-slate-500">Otras Deducciones (Manuales):</span>
+                          <span className="font-mono text-rose-600 font-bold">-{formatCurrency(results.definitive.taxBreakdown.additionalDeductions)}</span>
                         </div>
                       )}
                     </div>
@@ -4900,103 +5274,112 @@ function MainApp() {
             <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-8">
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 {(() => {
-                  const accumulated = periods.reduce((acc, p) => {
-                    const isCurrent = p.id === selectedPeriodId;
-                    const pGross = isCurrent ? results.all.gross : (p.totalGross || 0);
-                    const pTotalGross = isCurrent ? results.all.totalPatrimonial : (p.totalGrossWithBenefits || 0);
-                    const pDeductions = isCurrent ? results.all.totalDeductions : (p.totalDeductions || 0);
-                    const pNet = isCurrent ? results.all.net : (p.net || 0);
-                    const pPrima = isCurrent ? results.all.primaProporcional : (p.primaProporcional || 0);
-                    const pCesantias = isCurrent ? results.all.cesantiasProporcional : (p.cesantiasProporcional || 0);
-                    const pIntereses = isCurrent ? results.all.interesesCesantias : (p.interesesCesantias || 0);
-                    const pVacaciones = isCurrent ? results.all.vacacionesProporcional : (p.vacacionesProporcional || 0);
-
+                  const accumulated = periodsWithLiveTotals.reduce((acc, p) => {
                     return {
-                      gross: acc.gross + pGross,
-                      totalGross: acc.totalGross + pTotalGross,
-                      deductions: acc.deductions + pDeductions,
-                      net: acc.net + pNet,
-                      prima: acc.prima + pPrima,
-                      cesantias: acc.cesantias + pCesantias,
-                      intereses: acc.intereses + pIntereses,
-                      vacaciones: acc.vacaciones + pVacaciones
+                      gross: acc.gross + p.liveGross,
+                      totalGross: acc.totalGross + p.livePatrimonial,
+                      deductions: acc.deductions + p.liveDeductions,
+                      net: acc.net + p.liveNet,
+                      prima: acc.prima + (p.liveGross / 12), // Estimate based on live gross logic
+                      cesantias: acc.cesantias + (p.liveGross / 12),
+                      intereses: acc.intereses + (p.liveGross / 12 * 0.12),
+                      vacaciones: acc.vacaciones + (p.liveGross / 24)
                     };
                   }, { gross: 0, totalGross: 0, deductions: 0, net: 0, prima: 0, cesantias: 0, intereses: 0, vacaciones: 0 });
 
                   return (
                     <div className="space-y-6">
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                        <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Ingreso Salarial</p>
-                          <p className="text-xl font-bold text-slate-700">{formatCurrency(accumulated.gross)}</p>
-                        </div>
-                        <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
-                          <div className="flex justify-between items-start">
-                            <div>
-                              <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-1">Total Ingresos + Prestaciones</p>
-                              <p className="text-xl font-bold text-emerald-700">{formatCurrency(accumulated.totalGross)}</p>
+                      <div className="space-y-4">
+                        <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200">
+                          <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
+                            <div className="w-4 h-1 bg-indigo-600" />
+                            Totales Generales Acumulados
+                          </h4>
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-sm font-medium">
+                            <div className="flex justify-between border-b border-slate-100 py-2">
+                              <span className="text-slate-500">Ingreso Salarial Bruto:</span>
+                              <span className="font-mono text-slate-800 font-bold">{formatCurrency(accumulated.gross)}</span>
                             </div>
-                            <button 
-                              onClick={() => setShowAccumulatedComponents(!showAccumulatedComponents)}
-                              className="p-1 hover:bg-emerald-100 rounded-lg transition-colors text-emerald-600"
-                            >
-                              <ChevronDown className={`w-4 h-4 transition-transform ${showAccumulatedComponents ? 'rotate-180' : ''}`} />
-                            </button>
+                            <div className="flex justify-between border-b border-slate-100 py-2">
+                              <span className="text-emerald-500 font-medium tracking-tight">Total Patrimonial (+Prestaciones):</span>
+                              <span className="font-mono text-emerald-700 font-bold">{formatCurrency(accumulated.totalGross)}</span>
+                            </div>
+                            <div className="flex justify-between border-b border-slate-100 py-2">
+                              <span className="text-rose-500">Total Deducciones:</span>
+                              <span className="font-mono text-rose-700 font-bold">-{formatCurrency(accumulated.deductions)}</span>
+                            </div>
+                            <div className="flex justify-between border-b border-slate-100 py-2 px-3 bg-indigo-50 rounded-lg">
+                              <span className="text-indigo-600 font-bold">NETO TOTAL REAL:</span>
+                              <span className="font-mono text-indigo-700 font-black">{formatCurrency(accumulated.net)}</span>
+                            </div>
                           </div>
                         </div>
-                        <div className="p-4 bg-rose-50 rounded-2xl border border-rose-100">
-                          <p className="text-[10px] font-bold text-rose-600 uppercase tracking-widest mb-1">Total Deducciones</p>
-                          <p className="text-xl font-bold text-rose-700">{formatCurrency(accumulated.deductions)}</p>
-                        </div>
-                        <div className="p-4 bg-indigo-600 rounded-2xl text-white shadow-lg shadow-indigo-100">
-                          <p className="text-[10px] font-bold opacity-80 uppercase tracking-widest mb-1">Total Neto</p>
-                          <p className="text-xl font-bold">{formatCurrency(accumulated.net)}</p>
+
+                        <div className="p-4 bg-white rounded-2xl border border-slate-100">
+                          <div className="flex items-center justify-between mb-4">
+                            <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
+                              <div className="w-4 h-1 bg-emerald-500" />
+                              Desglose de Prestaciones Sociales Acumuladas
+                            </h4>
+                            <button 
+                              onClick={() => setShowAccumulatedComponents(!showAccumulatedComponents)}
+                              className="text-[9px] font-extrabold text-indigo-600 uppercase hover:underline decoration-2 underline-offset-4"
+                            >
+                              {showAccumulatedComponents ? 'Ocultar Detalle' : 'Ver Detalle Completo Excel'}
+                            </button>
+                          </div>
+                          
+                          <AnimatePresence>
+                            {showAccumulatedComponents && (
+                              <motion.div 
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: 'auto' }}
+                                exit={{ opacity: 0, height: 0 }}
+                                className="overflow-hidden"
+                              >
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-12 gap-y-2 text-[11px] font-medium text-slate-600 uppercase">
+                                  <div className="flex justify-between border-b border-slate-100 py-1">
+                                    <span>Total Prima:</span>
+                                    <span className="font-mono font-bold text-emerald-600">{formatCurrency(accumulated.prima)}</span>
+                                  </div>
+                                  <div className="flex justify-between border-b border-slate-100 py-1">
+                                    <span>Total Cesantías:</span>
+                                    <span className="font-mono font-bold text-emerald-600">{formatCurrency(accumulated.cesantias)}</span>
+                                  </div>
+                                  <div className="flex justify-between border-b border-slate-100 py-1">
+                                    <span>Total Int. Cesantías:</span>
+                                    <span className="font-mono font-bold text-emerald-600">{formatCurrency(accumulated.intereses)}</span>
+                                  </div>
+                                  <div className="flex justify-between border-b border-slate-100 py-1">
+                                    <span>Total Vacaciones:</span>
+                                    <span className="font-mono font-bold text-emerald-600">{formatCurrency(accumulated.vacaciones)}</span>
+                                  </div>
+                                  <div className="flex justify-between border-b border-slate-100 py-1">
+                                    <span className="text-rose-500">Total Deducciones Legales:</span>
+                                    <span className="font-mono font-bold text-rose-600">-{formatCurrency(accumulated.deductions)}</span>
+                                  </div>
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
                         </div>
                       </div>
 
                       <AnimatePresence>
-                        {showAccumulatedComponents && (
-                          <motion.div 
+                        {showAccumulatedDetails && (
+                          <motion.div
                             initial={{ opacity: 0, height: 0 }}
                             animate={{ opacity: 1, height: 'auto' }}
                             exit={{ opacity: 0, height: 0 }}
-                            className="bg-slate-50 p-6 rounded-2xl border border-slate-100 overflow-hidden"
+                            className="bg-white rounded-2xl border border-slate-200 overflow-hidden"
                           >
-                            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Desglose de Componentes Acumulados</h4>
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                              <div className="space-y-3">
-                                <div className="flex justify-between items-center border-b border-slate-200 pb-2">
-                                  <span className="text-xs font-medium text-slate-600">Total Salario Bruto:</span>
-                                  <span className="text-xs font-bold text-slate-800">{formatCurrency(accumulated.gross)}</span>
-                                </div>
-                                <div className="flex justify-between items-center border-b border-slate-200 pb-2">
-                                  <span className="text-xs font-medium text-slate-600">Total Prima:</span>
-                                  <span className="text-xs font-bold text-emerald-600">{formatCurrency(accumulated.prima)}</span>
-                                </div>
-                              </div>
-                              <div className="space-y-3">
-                                <div className="flex justify-between items-center border-b border-slate-200 pb-2">
-                                  <span className="text-xs font-medium text-slate-600">Total Cesantías:</span>
-                                  <span className="text-xs font-bold text-emerald-600">{formatCurrency(accumulated.cesantias)}</span>
-                                </div>
-                                <div className="flex justify-between items-center border-b border-slate-200 pb-2">
-                                  <span className="text-xs font-medium text-slate-600">Total Intereses Cesantías:</span>
-                                  <span className="text-xs font-bold text-emerald-600">{formatCurrency(accumulated.intereses)}</span>
-                                </div>
-                              </div>
-                              <div className="space-y-3">
-                                <div className="flex justify-between items-center border-b border-slate-200 pb-2">
-                                  <span className="text-xs font-medium text-slate-600">Total Vacaciones:</span>
-                                  <span className="text-xs font-bold text-emerald-600">{formatCurrency(accumulated.vacaciones)}</span>
-                                </div>
-                                <div className="flex justify-between items-center border-b border-slate-200 pb-2">
-                                  <span className="text-xs font-medium text-rose-500">Total Deducciones:</span>
-                                  <span className="text-xs font-bold text-rose-600">-{formatCurrency(accumulated.deductions)}</span>
-                                </div>
-                              </div>
+                            <div className="p-4 bg-slate-50 border-b border-slate-200">
+                              <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
+                                <div className="w-4 h-1 bg-indigo-600" />
+                                Desglose por Periodos (Histórico Excel)
+                              </h4>
                             </div>
-
-                            <div className="mt-8 overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                            <div className="overflow-x-auto">
                               <table className="w-full text-left border-collapse">
                                 <thead>
                                   <tr className="bg-slate-50 border-b border-slate-200">
@@ -5010,14 +5393,14 @@ function MainApp() {
                                   </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100">
-                                  {periods.map(p => {
+                                  {periodsWithLiveTotals.map(p => {
                                     const isCurrent = p.id === selectedPeriodId;
-                                    const pGross = isCurrent ? results.all.gross : (p.totalGross || 0);
-                                    const pPrima = isCurrent ? results.all.primaProporcional : (p.primaProporcional || 0);
-                                    const pCesantias = isCurrent ? results.all.cesantiasProporcional : (p.cesantiasProporcional || 0);
-                                    const pIntereses = isCurrent ? results.all.interesesCesantias : (p.interesesCesantias || 0);
-                                    const pVacaciones = isCurrent ? results.all.vacacionesProporcional : (p.vacacionesProporcional || 0);
-                                    const pTotal = isCurrent ? results.all.totalPatrimonial : (p.totalGrossWithBenefits || 0);
+                                    const pGross = p.liveGross;
+                                    const pPrima = p.liveGross / 12;
+                                    const pCesantias = p.liveGross / 12;
+                                    const pIntereses = p.liveGross / 12 * 0.12;
+                                    const pVacaciones = p.liveGross / 24;
+                                    const pTotal = p.livePatrimonial;
 
                                     return (
                                       <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
@@ -5044,43 +5427,6 @@ function MainApp() {
                   );
                 })()}
               </div>
-
-              {showAccumulatedDetails && (
-                <motion.div 
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="overflow-hidden"
-                >
-                  <div className="overflow-x-auto rounded-2xl border border-slate-100">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="bg-slate-50 border-b border-slate-100">
-                          <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Periodo</th>
-                          <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Ingreso Salarial</th>
-                          <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Ingresos + Prestaciones</th>
-                          <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Deducciones</th>
-                          <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Neto</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-50">
-                        {periods.map(p => (
-                          <tr key={p.id} className="hover:bg-slate-50 transition-colors">
-                            <td className="p-4">
-                              <p className="text-xs font-bold text-slate-700">{p.name}</p>
-                              <p className="text-[9px] text-slate-400">{p.startDate} - {p.endDate}</p>
-                            </td>
-                            <td className="p-4 text-xs font-mono text-right text-slate-600">{formatCurrency(p.totalGross || 0)}</td>
-                            <td className="p-4 text-xs font-mono text-right text-emerald-600 font-bold">{formatCurrency(p.totalGrossWithBenefits || 0)}</td>
-                            <td className="p-4 text-xs font-mono text-right text-rose-500">{formatCurrency(p.totalDeductions || 0)}</td>
-                            <td className="p-4 text-xs font-mono text-right text-indigo-600 font-bold">{formatCurrency(p.net || 0)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </motion.div>
-              )}
             </div>
           </section>
 
@@ -5100,65 +5446,77 @@ function MainApp() {
                   <p className="text-slate-500 font-medium">No hay historial de periodos registrados.</p>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {periods.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).map(p => (
-                    <div 
-                      key={p.id}
-                      onClick={() => setSelectedPeriodId(p.id)}
-                      className={`p-5 rounded-2xl border transition-all cursor-pointer group ${
-                        selectedPeriodId === p.id 
-                          ? 'bg-indigo-50 border-indigo-200 shadow-sm' 
-                          : 'bg-slate-50 border-transparent hover:bg-white hover:border-slate-200 hover:shadow-md'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2">
-                          <div className={`p-2 rounded-xl ${p.status === 'active' ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-200 text-slate-500'}`}>
-                            <Calendar className="w-4 h-4" />
-                          </div>
-                          <div className="flex flex-col">
-                            <span className={`px-2 py-0.5 rounded-full text-[8px] font-bold uppercase tracking-wider w-fit ${
-                              p.status === 'active' ? 'bg-emerald-500 text-white' : 'bg-slate-300 text-slate-600'
-                            }`}>
-                              {p.status === 'active' ? 'Activo' : 'Archivado'}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openEditPeriod(p);
-                            }}
-                            className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-white rounded-lg transition-all"
-                            title="Editar Periodo"
+                <div className="overflow-x-auto rounded-3xl border border-slate-200">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200">
+                        <th className="p-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Estado</th>
+                        <th className="p-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Periodo / Mes</th>
+                        <th className="p-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Devengado (Mes)</th>
+                        <th className="p-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Patrimon. (+Prest)</th>
+                        <th className="p-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {[...periodsWithLiveTotals].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).map(p => {
+                        const isSelected = selectedPeriodId === p.id;
+                        const displayGross = p.liveGross;
+                        const displayTotal = p.liveNet;
+
+                        return (
+                          <tr 
+                            key={p.id}
+                            onClick={() => setSelectedPeriodId(p.id)}
+                            className={`group cursor-pointer transition-colors ${
+                              isSelected ? 'bg-indigo-50/50' : 'hover:bg-slate-50/80 bg-white'
+                            }`}
                           >
-                            <Edit className="w-3.5 h-3.5" />
-                          </button>
-                          <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              deletePeriod(p.id);
-                            }}
-                            className="p-2 text-slate-400 hover:text-rose-500 hover:bg-white rounded-lg transition-all"
-                            title="Eliminar Periodo"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                      <h4 className="font-bold text-slate-800 mb-1 group-hover:text-indigo-600 transition-colors">{p.name}</h4>
-                      <p className="text-[10px] text-slate-500 font-medium">
-                        {p.startDate} al {p.endDate}
-                      </p>
-                      {p.totalGross !== undefined && (
-                        <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between">
-                          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Ingreso Salarial</span>
-                          <span className="text-xs font-bold text-emerald-600">{formatCurrency(p.totalGross)}</span>
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                            <td className="p-4">
+                              <span className={`px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${
+                                p.status === 'active' 
+                                  ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' 
+                                  : 'bg-slate-100 text-slate-500 border border-slate-200'
+                              }`}>
+                                {p.status === 'active' ? 'Sync' : 'Arc'}
+                              </span>
+                            </td>
+                            <td className="p-4">
+                              <div className="flex flex-col">
+                                <span className={`text-sm font-bold ${isSelected ? 'text-indigo-700' : 'text-slate-800'}`}>{p.name}</span>
+                                <span className="text-[10px] text-slate-400 font-medium font-mono">{p.startDate} → {p.endDate}</span>
+                              </div>
+                            </td>
+                            <td className="p-4 text-right">
+                              <span className={`text-sm font-mono font-bold ${isSelected ? 'text-indigo-600' : 'text-slate-700'}`}>
+                                {formatCurrency(displayGross)}
+                              </span>
+                            </td>
+                            <td className="p-4 text-right border-l border-slate-50 group-hover:border-slate-100">
+                              <span className={`text-sm font-mono font-bold ${isSelected ? 'text-emerald-700' : 'text-slate-700'}`}>
+                                {formatCurrency(displayTotal)}
+                              </span>
+                            </td>
+                            <td className="p-4 text-right">
+                              <div className="flex items-center justify-end gap-2">
+                                <button 
+                                  onClick={(e) => { e.stopPropagation(); openEditPeriod(p); }}
+                                  className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-white border border-transparent hover:border-indigo-100 rounded-xl transition-all"
+                                >
+                                  <Edit className="w-4 h-4" />
+                                </button>
+                                <button 
+                                  onClick={(e) => { e.stopPropagation(); deletePeriod(p.id); }}
+                                  className="p-2 text-slate-400 hover:text-rose-600 hover:bg-white border border-transparent hover:border-rose-100 rounded-xl transition-all"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>
@@ -5285,13 +5643,13 @@ function MainApp() {
                 <div className="space-y-4">
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 tracking-wider">Nombre (Opcional)</label>
-                    <input 
-                      type="text"
-                      placeholder="Ej: Trisemana Abril A"
-                      value={newTrisemanaData.name}
-                      onChange={(e) => setNewTrisemanaData({ ...newTrisemanaData, name: e.target.value })}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-amber-500 outline-none transition-all"
-                    />
+                      <input 
+                        type="text"
+                        placeholder="Ej: Trisemana Abril A"
+                        value={newTrisemanaData.name || ''}
+                        onChange={(e) => setNewTrisemanaData({ ...newTrisemanaData, name: e.target.value })}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-amber-500 outline-none transition-all"
+                      />
                   </div>
                   
                   <div className="grid grid-cols-2 gap-4">
@@ -5299,7 +5657,7 @@ function MainApp() {
                       <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 tracking-wider">Fecha Inicio</label>
                       <input 
                         type="date"
-                        value={newTrisemanaData.startDate}
+                        value={newTrisemanaData.startDate || ''}
                         onChange={(e) => setNewTrisemanaData({ ...newTrisemanaData, startDate: e.target.value })}
                         className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-amber-500 outline-none transition-all"
                       />
@@ -5308,7 +5666,7 @@ function MainApp() {
                       <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 tracking-wider">Fecha Fin</label>
                       <input 
                         type="date"
-                        value={newTrisemanaData.endDate}
+                        value={newTrisemanaData.endDate || ''}
                         onChange={(e) => setNewTrisemanaData({ ...newTrisemanaData, endDate: e.target.value })}
                         className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-amber-500 outline-none transition-all"
                       />
@@ -5320,7 +5678,7 @@ function MainApp() {
                     <div className="relative">
                       <input 
                         type="number"
-                        value={newTrisemanaData.maxHours}
+                        value={newTrisemanaData.maxHours || 0}
                         onChange={(e) => setNewTrisemanaData({ ...newTrisemanaData, maxHours: Number(e.target.value) })}
                         className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-amber-500 outline-none transition-all font-mono"
                       />
@@ -5379,13 +5737,13 @@ function MainApp() {
                 <div className="space-y-4">
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 tracking-wider">Nombre del Periodo (Opcional)</label>
-                    <input 
-                      type="text"
-                      placeholder="Ej: Marzo 2026"
-                      value={newPeriodData.name}
-                      onChange={(e) => setNewPeriodData({ ...newPeriodData, name: e.target.value })}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
-                    />
+                      <input 
+                        type="text"
+                        placeholder="Ej: Marzo 2026"
+                        value={newPeriodData.name || ''}
+                        onChange={(e) => setNewPeriodData({ ...newPeriodData, name: e.target.value })}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                      />
                   </div>
                   
                   <div className="grid grid-cols-2 gap-4">
@@ -5393,7 +5751,7 @@ function MainApp() {
                       <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 tracking-wider">Fecha Inicio</label>
                       <input 
                         type="date"
-                        value={newPeriodData.startDate}
+                        value={newPeriodData.startDate || ''}
                         onChange={(e) => setNewPeriodData({ ...newPeriodData, startDate: e.target.value })}
                         className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
                       />
@@ -5402,7 +5760,7 @@ function MainApp() {
                       <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5 tracking-wider">Fecha Fin</label>
                       <input 
                         type="date"
-                        value={newPeriodData.endDate}
+                        value={newPeriodData.endDate || ''}
                         onChange={(e) => setNewPeriodData({ ...newPeriodData, endDate: e.target.value })}
                         className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
                       />
@@ -5416,7 +5774,7 @@ function MainApp() {
                       <input 
                         type="number"
                         placeholder="Ej: 160"
-                        value={newPeriodData.extraThreshold}
+                        value={newPeriodData.extraThreshold || 0}
                         onChange={(e) => setNewPeriodData({ ...newPeriodData, extraThreshold: Number(e.target.value) })}
                         className="w-full bg-slate-50 border border-slate-200 rounded-xl py-3 pl-10 pr-4 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-mono"
                       />
@@ -5488,23 +5846,50 @@ function MainApp() {
         {confirmDialog && (
           <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
             <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-3xl shadow-2xl max-w-sm w-full overflow-hidden"
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-white rounded-[32px] shadow-2xl max-w-sm w-full overflow-hidden border border-slate-100"
             >
-              <div className="p-6 space-y-4">
-                <div className="flex items-center gap-3 text-amber-500">
-                  <AlertTriangle className="w-6 h-6" />
-                  <h3 className="font-bold text-slate-900">Confirmar Acción</h3>
+              <div className="p-8 space-y-6">
+                <div className="flex items-center gap-4">
+                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
+                    confirmDialog.type === 'delete' ? 'bg-rose-100 text-rose-600' : 'bg-indigo-100 text-indigo-600'
+                  }`}>
+                    {confirmDialog.type === 'delete' ? <Trash2 className="w-6 h-6" /> : <Edit3 className="w-6 h-6" />}
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-xl font-bold text-slate-900">
+                      {confirmDialog.title || 'Confirmar Acción'}
+                    </h3>
+                    <p className="text-sm text-slate-500 leading-relaxed font-medium">
+                      {confirmDialog.message}
+                    </p>
+                  </div>
                 </div>
-                <p className="text-sm text-slate-600 leading-relaxed">
-                  {confirmDialog.message}
-                </p>
+
+                {confirmDialog.changes && confirmDialog.changes.length > 0 && (
+                  <div className="bg-slate-50 rounded-2xl p-4 space-y-3 border border-slate-100 max-h-60 overflow-y-auto custom-scrollbar">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest pl-1">Resumen de Cambios:</p>
+                    <div className="space-y-2">
+                      {confirmDialog.changes.map((change, i) => (
+                        <div key={i} className="bg-white p-3 rounded-xl border border-slate-100 shadow-sm">
+                          <p className="text-[9px] font-black text-indigo-500 uppercase tracking-tighter mb-1">{change.field}</p>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-slate-400 line-through truncate flex-1">{change.old || '(Vacío)'}</span>
+                            <Plus className="w-3 h-3 text-slate-300 shrink-0 rotate-45" />
+                            <span className="text-[10px] text-emerald-600 font-bold truncate flex-1">{change.new || '(Vacío)'}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex gap-3 pt-2">
                   <button 
                     onClick={() => setConfirmDialog(null)}
-                    className="flex-1 py-3 border border-slate-200 text-slate-600 font-bold rounded-xl hover:bg-slate-50 transition-all"
+                    className="flex-1 py-4 bg-slate-50 text-slate-600 font-bold rounded-2xl hover:bg-slate-100 transition-all border border-slate-200"
                   >
                     Cancelar
                   </button>
@@ -5513,9 +5898,11 @@ function MainApp() {
                       confirmDialog.onConfirm();
                       setConfirmDialog(null);
                     }}
-                    className="flex-1 py-3 bg-rose-600 text-white font-bold rounded-xl hover:bg-rose-700 transition-all shadow-lg shadow-rose-200"
+                    className={`flex-1 py-4 text-white font-bold rounded-2xl transition-all shadow-lg hover:brightness-110 ${
+                      confirmDialog.type === 'delete' ? 'bg-rose-600 shadow-rose-200' : 'bg-indigo-600 shadow-indigo-200'
+                    }`}
                   >
-                    Confirmar
+                    {confirmDialog.confirmLabel || 'Confirmar'}
                   </button>
                 </div>
               </div>
@@ -5524,5 +5911,14 @@ function MainApp() {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+// --- Main Export ---
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <MainApp />
+    </ErrorBoundary>
   );
 }

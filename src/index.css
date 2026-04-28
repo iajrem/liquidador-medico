@@ -1,1 +1,48 @@
 @import "tailwindcss";
+
+@layer base {
+  :root {
+    --header-height: 73px;
+    --safe-area-top: env(safe-area-inset-top, 0px);
+    --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  html {
+    -webkit-tap-highlight-color: transparent;
+    scroll-behavior: smooth;
+    height: -webkit-fill-available;
+  }
+
+  body {
+    min-height: 100vh;
+    min-height: -webkit-fill-available;
+    overscroll-behavior-y: none;
+  }
+
+  input, select, textarea {
+    font-size: 16px !important; /* Prevents auto-zoom on iOS */
+  }
+}
+
+@layer utilities {
+  .min-h-screen-ios {
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+  
+  .safe-top {
+    padding-top: var(--safe-area-top);
+  }
+  
+  .safe-bottom {
+    padding-bottom: var(--safe-area-bottom);
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
